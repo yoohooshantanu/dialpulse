@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/yoohooshantanu/dialpulse/internal/model"
 	"github.com/yoohooshantanu/dialpulse/internal/pacer"
 	"github.com/yoohooshantanu/dialpulse/internal/queue"
+	"github.com/yoohooshantanu/dialpulse/internal/storage"
 	"github.com/yoohooshantanu/dialpulse/internal/timezone"
 )
 
@@ -343,7 +345,6 @@ func TestMultiCampaignConcurrencyIsolation(t *testing.T) {
 	}
 }
 
-
 func TestBusyCallRetryBackoff(t *testing.T) {
 	camp := &model.Campaign{
 		ID:              "camp_retry_test",
@@ -391,4 +392,151 @@ func TestBusyCallRetryBackoff(t *testing.T) {
 	engine.Stop()
 }
 
+func TestStoragePersistenceAndIdempotency(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryPostgresRepository()
 
+	camp := &model.Campaign{
+		ID:                "camp_store_test",
+		Name:              "Store Test",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+	}
+
+	if err := repo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	fetchedCamp, err := repo.GetCampaign(ctx, "camp_store_test")
+	if err != nil || fetchedCamp.ID != "camp_store_test" {
+		t.Fatalf("failed fetching campaign: %v", err)
+	}
+
+	leads := []*model.Lead{
+		{ID: "l1", CampaignID: camp.ID, PhoneNumber: "+12125550111", Priority: 10},
+		{ID: "l2", CampaignID: camp.ID, PhoneNumber: "+12125550111", Priority: 20}, // Duplicate!
+		{ID: "l3", CampaignID: camp.ID, PhoneNumber: "+14155550222", Priority: 30},
+	}
+
+	inserted, duplicates, err := repo.IngestLeadsIdempotent(ctx, leads)
+	if err != nil {
+		t.Fatalf("ingest error: %v", err)
+	}
+	if inserted != 2 || duplicates != 1 {
+		t.Errorf("expected 2 inserted, 1 duplicate, got %d, %d", inserted, duplicates)
+	}
+
+	// Update lead to DLQ
+	if err := repo.UpdateLeadStatus(ctx, "l1", model.StatusDLQ, "CARRIER_TIMEOUT", nil); err != nil {
+		t.Fatalf("failed updating lead: %v", err)
+	}
+
+	// Record Call Attempt
+	attempt := &model.CallAttempt{
+		ID:             "att_1",
+		CampaignID:     camp.ID,
+		LeadID:         "l1",
+		PhoneNumber:    "+12125550111",
+		Status:         model.StatusFailed,
+		RingDurationMs: 120,
+		ErrorMessage:   "carrier timeout",
+	}
+	if err := repo.RecordCallAttempt(ctx, attempt); err != nil {
+		t.Fatalf("failed recording call attempt: %v", err)
+	}
+
+	dlq, err := repo.GetDeadLetterQueue(ctx, camp.ID)
+	if err != nil || len(dlq) != 1 {
+		t.Fatalf("expected 1 DLQ entry, got %d (err: %v)", len(dlq), err)
+	}
+	if dlq[0].FailureReason != "CARRIER_TIMEOUT" {
+		t.Errorf("expected failure reason CARRIER_TIMEOUT, got %s", dlq[0].FailureReason)
+	}
+}
+
+type SlowTelephonyDialer struct {
+	ringDelay time.Duration
+}
+
+func (s *SlowTelephonyDialer) Dial(ctx context.Context, lead *model.Lead) (model.CallStatus, time.Duration, error) {
+	select {
+	case <-time.After(s.ringDelay):
+		return model.StatusAnswered, s.ringDelay, nil
+	case <-ctx.Done():
+		return model.StatusFailed, 0, ctx.Err()
+	}
+}
+
+func TestInFlightDialLimiting(t *testing.T) {
+	camp := &model.Campaign{
+		ID:                   "camp_inflight_test",
+		AllocatedAgents:      2,
+		HistoricalAnswerRate: 0.50,
+		AverageHandleSec:     60.0,
+		AverageRingSec:       15.0,
+	}
+
+	// Ring delay is 100ms, ticker is 50ms
+	slowDialer := &SlowTelephonyDialer{ringDelay: 100 * time.Millisecond}
+	engine := queue.NewCampaignEngine(camp, nil, nil, slowDialer)
+
+	var leads []*model.Lead
+	for i := 0; i < 20; i++ {
+		leads = append(leads, &model.Lead{
+			PhoneNumber: "+12125550" + string(rune('0'+i)),
+			Priority:    10,
+		})
+	}
+	engine.IngestLeads(leads)
+
+	engine.Start()
+	// Let ticker fire twice (100ms)
+	time.Sleep(120 * time.Millisecond)
+
+	stats := engine.GetStats()
+	// Because in-flight ringing calls are subtracted from capacity, the engine must NOT have dispatched all 20 leads
+	if stats.DialedCalls > 10 {
+		t.Errorf("expected in-flight limiter to throttle dials, got %d dials", stats.DialedCalls)
+	}
+
+	engine.Stop()
+}
+
+func TestPacerSingleOutcomeAccounting(t *testing.T) {
+	camp := &model.Campaign{
+		ID:                   "camp_accounting_test",
+		AllocatedAgents:      1,    // 1 agent slot
+		HistoricalAnswerRate: 0.20, // 20% estimated answer rate triggers predictive overdials (3 dials)
+		MaxDialMultiplier:    3.5,
+	}
+
+	dialer := &queue.MockTelephonyDialer{
+		HumanAnswerRate: 1.0, // But 100% of dialed calls actually answer simultaneously
+	}
+
+	engine := queue.NewCampaignEngine(camp, nil, nil, dialer)
+	engine.IngestLeads([]*model.Lead{
+		{PhoneNumber: "+12125559091", Priority: 100},
+		{PhoneNumber: "+12125559092", Priority: 90},
+		{PhoneNumber: "+12125559093", Priority: 80},
+	})
+
+	engine.Start()
+	time.Sleep(150 * time.Millisecond)
+
+	stats := engine.GetStats()
+	// Out of 3 simultaneous answers with 1 agent slot:
+	// Exactly 1 must connect and 2 must abandon. Total answered = 3.
+	// Outcomes must be recorded exactly once without double counting
+	if stats.ConnectedCalls != 1 {
+		t.Errorf("expected exactly 1 connected call, got %d", stats.ConnectedCalls)
+	}
+	if stats.AbandonedCalls != 2 {
+		t.Errorf("expected exactly 2 abandoned calls, got %d", stats.AbandonedCalls)
+	}
+	if stats.AnsweredCalls != 3 {
+		t.Errorf("expected total 3 answered calls, got %d", stats.AnsweredCalls)
+	}
+
+	engine.Stop()
+}

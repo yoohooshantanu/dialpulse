@@ -63,19 +63,31 @@ type Lead struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
+type CallAttempt struct {
+	ID             string     `json:"id"`
+	CampaignID     string     `json:"campaign_id"`
+	LeadID         string     `json:"lead_id"`
+	PhoneNumber    string     `json:"phone_number"`
+	Status         CallStatus `json:"status"`
+	RingDurationMs int        `json:"ring_duration_ms"`
+	TalkDurationMs int        `json:"talk_duration_ms"`
+	ErrorMessage   string     `json:"error_message,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
 type Campaign struct {
-	ID                 string         `json:"id"`
-	TenantID           string         `json:"tenant_id"`
-	Name               string         `json:"name"`
-	Mode               DialingMode    `json:"mode"`
-	Status             CampaignStatus `json:"status"`
-	TargetAbandonRate  float64        `json:"target_abandon_rate"` // e.g., 0.025 (2.5%)
-	MaxDialMultiplier  float64        `json:"max_dial_multiplier"`  // e.g., 3.5
-	AllocatedAgents    int            `json:"allocated_agents"`    // Available AI agent concurrency slots
-	AverageHandleSec   float64        `json:"average_handle_sec"`  // Expected call length in seconds
-	AverageRingSec     float64        `json:"average_ring_sec"`    // Expected ring time in seconds
-	HistoricalAnswerRate float64      `json:"historical_answer_rate"` // e.g. 0.20 (20%)
-	CreatedAt          time.Time      `json:"created_at"`
+	ID                   string         `json:"id"`
+	TenantID             string         `json:"tenant_id"`
+	Name                 string         `json:"name"`
+	Mode                 DialingMode    `json:"mode"`
+	Status               CampaignStatus `json:"status"`
+	TargetAbandonRate    float64        `json:"target_abandon_rate"` // e.g., 0.025 (2.5%)
+	MaxDialMultiplier    float64        `json:"max_dial_multiplier"` // e.g., 3.5
+	AllocatedAgents      int            `json:"allocated_agents"`   // Available AI agent concurrency slots
+	AverageHandleSec     float64        `json:"average_handle_sec"` // Expected call length in seconds
+	AverageRingSec       float64        `json:"average_ring_sec"`   // Expected ring time in seconds
+	HistoricalAnswerRate float64        `json:"historical_answer_rate"` // e.g. 0.20 (20%)
+	CreatedAt            time.Time      `json:"created_at"`
 }
 
 type CampaignStats struct {

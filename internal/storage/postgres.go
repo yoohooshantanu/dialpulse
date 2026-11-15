@@ -6,16 +6,281 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yoohooshantanu/dialpulse/internal/logger"
 	"github.com/yoohooshantanu/dialpulse/internal/model"
 )
 
-// CampaignRepository abstracts PostgreSQL persistence for campaigns and leads
+// CampaignRepository abstracts PostgreSQL persistence for campaigns, leads, and call attempts
 type CampaignRepository interface {
 	SaveCampaign(ctx context.Context, camp *model.Campaign) error
 	GetCampaign(ctx context.Context, id string) (*model.Campaign, error)
 	IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (inserted int, duplicates int, err error)
-	UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string) error
+	UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error
+	RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error
 	GetDeadLetterQueue(ctx context.Context, campaignID string) ([]*model.Lead, error)
+	Close()
+}
+
+// PostgresRepository implements CampaignRepository with connection pooling and atomic database transactions
+type PostgresRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
+	return &PostgresRepository{pool: pool}
+}
+
+func NewPostgresRepositoryFromURL(ctx context.Context, databaseURL string) (*PostgresRepository, error) {
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid postgres configuration: %w", err)
+	}
+
+	config.MaxConns = 25
+	config.MinConns = 2
+	config.MaxConnLifetime = 30 * time.Minute
+	config.MaxConnIdleTime = 5 * time.Minute
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create postgres connection pool: %w", err)
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("failed to ping postgres database: %w", err)
+	}
+
+	logger.L.Info("postgres_connected_successfully", "max_conns", config.MaxConns)
+	return &PostgresRepository{pool: pool}, nil
+}
+
+func (r *PostgresRepository) Close() {
+	if r.pool != nil {
+		r.pool.Close()
+	}
+}
+
+func (r *PostgresRepository) SaveCampaign(ctx context.Context, camp *model.Campaign) error {
+	query := `
+		INSERT INTO campaigns (
+			id, tenant_id, name, mode, status, target_abandon_rate,
+			max_dial_multiplier, allocated_agents, average_handle_sec,
+			average_ring_sec, historical_answer_rate, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			status = EXCLUDED.status,
+			allocated_agents = EXCLUDED.allocated_agents,
+			updated_at = NOW();`
+
+	tenantID := camp.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	createdAt := camp.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	_, err := r.pool.Exec(ctx, query,
+		camp.ID,
+		tenantID,
+		camp.Name,
+		string(camp.Mode),
+		string(camp.Status),
+		camp.TargetAbandonRate,
+		camp.MaxDialMultiplier,
+		camp.AllocatedAgents,
+		camp.AverageHandleSec,
+		camp.AverageRingSec,
+		camp.HistoricalAnswerRate,
+		createdAt,
+	)
+	return err
+}
+
+func (r *PostgresRepository) GetCampaign(ctx context.Context, id string) (*model.Campaign, error) {
+	query := `
+		SELECT id, tenant_id, name, mode, status, target_abandon_rate,
+		       max_dial_multiplier, allocated_agents, average_handle_sec,
+		       average_ring_sec, historical_answer_rate, created_at
+		FROM campaigns
+		WHERE id = $1;`
+
+	row := r.pool.QueryRow(ctx, query, id)
+	camp := &model.Campaign{}
+	var mode, status string
+
+	err := row.Scan(
+		&camp.ID,
+		&camp.TenantID,
+		&camp.Name,
+		&mode,
+		&status,
+		&camp.TargetAbandonRate,
+		&camp.MaxDialMultiplier,
+		&camp.AllocatedAgents,
+		&camp.AverageHandleSec,
+		&camp.AverageRingSec,
+		&camp.HistoricalAnswerRate,
+		&camp.CreatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, model.ErrCampaignNotFound
+		}
+		return nil, err
+	}
+
+	camp.Mode = model.DialingMode(mode)
+	camp.Status = model.CampaignStatus(status)
+	return camp, nil
+}
+
+// IngestLeadsIdempotent enforces database-level idempotency via ON CONFLICT (campaign_id, phone_number) DO NOTHING
+func (r *PostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (int, int, error) {
+	if len(leads) == 0 {
+		return 0, 0, nil
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	insertQuery := `
+		INSERT INTO leads (
+			id, campaign_id, phone_number, name, priority,
+			status, attempts, max_attempts, failure_reason,
+			created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (campaign_id, phone_number) DO NOTHING;`
+
+	inserted := 0
+	duplicates := 0
+
+	for _, l := range leads {
+		createdAt := l.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC()
+		}
+
+		tag, err := tx.Exec(ctx, insertQuery,
+			l.ID,
+			l.CampaignID,
+			l.PhoneNumber,
+			l.Name,
+			l.Priority,
+			string(l.Status),
+			l.Attempts,
+			l.MaxAttempts,
+			l.FailureReason,
+			createdAt,
+		)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed inserting lead %s: %w", l.ID, err)
+		}
+
+		if tag.RowsAffected() == 1 {
+			inserted++
+		} else {
+			duplicates++
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, fmt.Errorf("failed to commit lead batch: %w", err)
+	}
+
+	return inserted, duplicates, nil
+}
+
+func (r *PostgresRepository) UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error {
+	query := `
+		UPDATE leads
+		SET status = $1,
+		    failure_reason = $2,
+		    next_attempt_at = $3,
+		    last_attempt_at = NOW(),
+		    attempts = attempts + 1
+		WHERE id = $4;`
+
+	_, err := r.pool.Exec(ctx, query, string(status), reason, nextAttempt, leadID)
+	return err
+}
+
+func (r *PostgresRepository) RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error {
+	query := `
+		INSERT INTO call_attempts (
+			id, campaign_id, lead_id, phone_number, status,
+			ring_duration_ms, talk_duration_ms, error_message, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`
+
+	createdAt := attempt.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	_, err := r.pool.Exec(ctx, query,
+		attempt.ID,
+		attempt.CampaignID,
+		attempt.LeadID,
+		attempt.PhoneNumber,
+		string(attempt.Status),
+		attempt.RingDurationMs,
+		attempt.TalkDurationMs,
+		attempt.ErrorMessage,
+		createdAt,
+	)
+	return err
+}
+
+func (r *PostgresRepository) GetDeadLetterQueue(ctx context.Context, campaignID string) ([]*model.Lead, error) {
+	query := `
+		SELECT id, campaign_id, phone_number, name, priority,
+		       status, attempts, max_attempts, failure_reason,
+		       last_attempt_at, next_attempt_at, created_at
+		FROM leads
+		WHERE campaign_id = $1 AND status = 'DEAD_LETTER_QUEUE'
+		ORDER BY created_at DESC;`
+
+	rows, err := r.pool.Query(ctx, query, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var dlq []*model.Lead
+	for rows.Next() {
+		l := &model.Lead{}
+		var status string
+		err := rows.Scan(
+			&l.ID,
+			&l.CampaignID,
+			&l.PhoneNumber,
+			&l.Name,
+			&l.Priority,
+			&status,
+			&l.Attempts,
+			&l.MaxAttempts,
+			&l.FailureReason,
+			&l.LastAttemptAt,
+			&l.NextAttemptAt,
+			&l.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		l.Status = model.CallStatus(status)
+		dlq = append(dlq, l)
+	}
+
+	return dlq, nil
 }
 
 // MemoryPostgresRepository provides an in-memory replica with identical relational semantics and idempotency constraints
@@ -25,6 +290,7 @@ type MemoryPostgresRepository struct {
 	leads      map[string]*model.Lead
 	phoneIndex map[string]string // Key: campaignID + ":" + phone
 	dlq        map[string][]*model.Lead
+	attempts   map[string][]*model.CallAttempt
 }
 
 func NewMemoryPostgresRepository() *MemoryPostgresRepository {
@@ -33,8 +299,11 @@ func NewMemoryPostgresRepository() *MemoryPostgresRepository {
 		leads:      make(map[string]*model.Lead),
 		phoneIndex: make(map[string]string),
 		dlq:        make(map[string][]*model.Lead),
+		attempts:   make(map[string][]*model.CallAttempt),
 	}
 }
+
+func (r *MemoryPostgresRepository) Close() {}
 
 func (r *MemoryPostgresRepository) SaveCampaign(ctx context.Context, camp *model.Campaign) error {
 	r.mu.Lock()
@@ -75,7 +344,7 @@ func (r *MemoryPostgresRepository) IngestLeadsIdempotent(ctx context.Context, le
 	return inserted, duplicates, nil
 }
 
-func (r *MemoryPostgresRepository) UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string) error {
+func (r *MemoryPostgresRepository) UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -86,6 +355,8 @@ func (r *MemoryPostgresRepository) UpdateLeadStatus(ctx context.Context, leadID 
 
 	lead.Status = status
 	lead.FailureReason = reason
+	lead.Attempts++
+	lead.NextAttemptAt = nextAttempt
 	now := time.Now().UTC()
 	lead.LastAttemptAt = &now
 
@@ -93,6 +364,13 @@ func (r *MemoryPostgresRepository) UpdateLeadStatus(ctx context.Context, leadID 
 		r.dlq[lead.CampaignID] = append(r.dlq[lead.CampaignID], lead)
 	}
 
+	return nil
+}
+
+func (r *MemoryPostgresRepository) RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attempts[attempt.CampaignID] = append(r.attempts[attempt.CampaignID], attempt)
 	return nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/yoohooshantanu/dialpulse/internal/metrics"
 	"github.com/yoohooshantanu/dialpulse/internal/model"
 	"github.com/yoohooshantanu/dialpulse/internal/pacer"
+	"github.com/yoohooshantanu/dialpulse/internal/storage"
 	"github.com/yoohooshantanu/dialpulse/internal/timezone"
 )
 
@@ -29,7 +30,6 @@ type MockTelephonyDialer struct {
 }
 
 func (m *MockTelephonyDialer) Dial(ctx context.Context, lead *model.Lead) (model.CallStatus, time.Duration, error) {
-	// Simulated carrier ring time (10ms - 25ms in test/simulation)
 	ringTime := time.Duration(10+rand.Intn(15)) * time.Millisecond
 	select {
 	case <-time.After(ringTime):
@@ -48,26 +48,28 @@ func (m *MockTelephonyDialer) Dial(ctx context.Context, lead *model.Lead) (model
 	return model.StatusNoAnswer, ringTime, nil
 }
 
-// CampaignEngine orchestrates lead priority dispatching, pacing, and carrier execution
+// CampaignEngine orchestrates lead priority dispatching, predictive pacing, and carrier execution
 type CampaignEngine struct {
-	mu           sync.RWMutex
-	campaign     *model.Campaign
-	pacer        *pacer.PredictivePacer
-	dncFilter    *dnc.BloomFilter
-	tzGovernor   *timezone.TimezoneGovernor
-	dialer       TelephonyDialer
-	leads        map[string]*model.Lead
-	phoneIndex   map[string]string // Campaign-level phone deduplication for idempotency
-	pendingQueue []*model.Lead
-	dlq          []*model.Lead // Dead-Letter Queue for exhausted/unrecoverable leads
-	activeCalls  int32
-	idleAgents   int32
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	isClosed     bool
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
+	mu            sync.RWMutex
+	campaign      *model.Campaign
+	pacer         *pacer.PredictivePacer
+	dncFilter     *dnc.BloomFilter
+	tzGovernor    *timezone.TimezoneGovernor
+	dialer        TelephonyDialer
+	repo          storage.CampaignRepository
+	leads         map[string]*model.Lead
+	phoneIndex    map[string]string // In-memory cache for fast deduplication
+	pendingQueue  []*model.Lead
+	dlq           []*model.Lead // Dead-Letter Queue for unserviceable leads
+	activeCalls   int32         // Currently connected or in-conversation calls
+	inFlightDials int32         // Outstanding dialing/ringing outbound attempts
+	idleAgents    int32
+	stopCh        chan struct{}
+	stopOnce      sync.Once
+	isClosed      bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 func NewCampaignEngine(
@@ -105,6 +107,13 @@ func NewCampaignEngine(
 	return engine
 }
 
+// SetRepository connects a persistent repository (PostgreSQL or Memory replica)
+func (e *CampaignEngine) SetRepository(repo storage.CampaignRepository) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.repo = repo
+}
+
 // IngestLeads inserts new prospective contacts idempotently, skipping duplicate phone numbers
 func (e *CampaignEngine) IngestLeads(leads []*model.Lead) (int, int) {
 	e.mu.Lock()
@@ -112,13 +121,15 @@ func (e *CampaignEngine) IngestLeads(leads []*model.Lead) (int, int) {
 
 	accepted := 0
 	duplicates := 0
+	var toInsert []*model.Lead
+
 	for _, l := range leads {
 		normPhone := dnc.NormalizeNumber(l.PhoneNumber)
 		if normPhone == "" {
 			continue
 		}
 
-		// Idempotency constraint: avoid duplicate active entries for the same phone within campaign
+		// Idempotency check against in-memory index
 		if _, exists := e.phoneIndex[normPhone]; exists {
 			duplicates++
 			continue
@@ -139,7 +150,15 @@ func (e *CampaignEngine) IngestLeads(leads []*model.Lead) (int, int) {
 		e.phoneIndex[normPhone] = l.ID
 		e.leads[l.ID] = l
 		e.pendingQueue = append(e.pendingQueue, l)
+		toInsert = append(toInsert, l)
 		accepted++
+	}
+
+	// Persist to underlying storage if configured
+	if e.repo != nil && len(toInsert) > 0 {
+		go func(items []*model.Lead) {
+			_, _, _ = e.repo.IngestLeadsIdempotent(context.Background(), items)
+		}(toInsert)
 	}
 
 	// Sort pending queue by priority descending (VIP leads first)
@@ -156,9 +175,16 @@ func (e *CampaignEngine) IngestLeads(leads []*model.Lead) (int, int) {
 	return accepted, duplicates
 }
 
-// Start begins the predictive dispatch ticker loop
+// Start begins the predictive dispatch ticker loop with strict concurrency locking
 func (e *CampaignEngine) Start() {
+	e.mu.Lock()
+	if e.isClosed || e.campaign.Status == model.CampaignRunning {
+		e.mu.Unlock()
+		return
+	}
 	e.campaign.Status = model.CampaignRunning
+	e.mu.Unlock()
+
 	go e.dispatchLoop()
 }
 
@@ -178,22 +204,26 @@ func (e *CampaignEngine) dispatchLoop() {
 
 func (e *CampaignEngine) tick() {
 	e.mu.Lock()
-	if e.campaign.Status != model.CampaignRunning || len(e.pendingQueue) == 0 {
+	if e.isClosed || e.campaign.Status != model.CampaignRunning || len(e.pendingQueue) == 0 {
 		e.mu.Unlock()
 		return
 	}
 
 	idle := int(atomic.LoadInt32(&e.idleAgents))
 	active := int(atomic.LoadInt32(&e.activeCalls))
+	inFlight := int(atomic.LoadInt32(&e.inFlightDials))
 
-	// Ask predictive pacer how many lines to dial
-	dialsNeeded := e.pacer.CalculateDialsNeeded(idle, active)
-	if dialsNeeded <= 0 {
+	// Ask predictive pacer for gross dials needed based on Little's Law / Erlang-C capacity model
+	grossDialsNeeded := e.pacer.CalculateDialsNeeded(idle, active)
+
+	// Deduct outstanding ringing calls to prevent dispatch burst over-subscription
+	netDialsNeeded := grossDialsNeeded - inFlight
+	if netDialsNeeded <= 0 {
 		e.mu.Unlock()
 		return
 	}
 
-	// Filter out leads currently holding off due to timezone curfew
+	// Filter out leads currently holding off due to timezone curfew or retry backoff
 	now := time.Now().UTC()
 	var eligible []*model.Lead
 	var deferred []*model.Lead
@@ -201,7 +231,7 @@ func (e *CampaignEngine) tick() {
 	for _, lead := range e.pendingQueue {
 		if lead.NextAttemptAt != nil && now.Before(*lead.NextAttemptAt) {
 			deferred = append(deferred, lead)
-		} else if len(eligible) < dialsNeeded {
+		} else if len(eligible) < netDialsNeeded {
 			eligible = append(eligible, lead)
 		} else {
 			deferred = append(deferred, lead)
@@ -209,10 +239,23 @@ func (e *CampaignEngine) tick() {
 	}
 
 	e.pendingQueue = deferred
+
+	// Reserve dispatch capacity before launching worker goroutines
+	for range eligible {
+		atomic.AddInt32(&e.inFlightDials, 1)
+	}
 	e.mu.Unlock()
 
 	// Dispatch batch concurrently
 	for _, lead := range eligible {
+		e.mu.RLock()
+		closed := e.isClosed
+		e.mu.RUnlock()
+		if closed {
+			atomic.AddInt32(&e.inFlightDials, -1)
+			return
+		}
+
 		e.wg.Add(1)
 		go e.dispatchLead(lead)
 	}
@@ -220,6 +263,8 @@ func (e *CampaignEngine) tick() {
 
 func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	defer e.wg.Done()
+	defer atomic.AddInt32(&e.inFlightDials, -1)
+
 	metrics.DefaultMetrics.IncActiveDialer()
 	defer metrics.DefaultMetrics.DecActiveDialer()
 
@@ -230,7 +275,12 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		lead.FailureReason = "DNC_PROHIBITED"
 		e.dlq = append(e.dlq, lead)
 		e.mu.Unlock()
+
 		metrics.DefaultMetrics.IncDNCHit()
+		e.pacer.RecordOutcome(model.StatusFailed)
+		if e.repo != nil {
+			_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, model.StatusDLQ, lead.FailureReason, nil)
+		}
 		logger.L.Warn("dial_routed_to_dlq_dnc", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 		return
 	}
@@ -264,27 +314,64 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
 
-	status, _, err := e.dialer.Dial(ctx, lead)
+	status, ringDuration, err := e.dialer.Dial(ctx, lead)
+
+	// Record immutable call attempt if repository is connected
+	if e.repo != nil {
+		attemptID := uuid.NewString()
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		_ = e.repo.RecordCallAttempt(context.Background(), &model.CallAttempt{
+			ID:             attemptID,
+			CampaignID:     e.campaign.ID,
+			LeadID:         lead.ID,
+			PhoneNumber:    lead.PhoneNumber,
+			Status:         status,
+			RingDurationMs: int(ringDuration.Milliseconds()),
+			ErrorMessage:   errMsg,
+			CreatedAt:      time.Now().UTC(),
+		})
+	}
+
 	if err != nil {
 		e.mu.Lock()
 		lead.Status = model.StatusDLQ
 		lead.FailureReason = "CARRIER_TRUNK_ERROR: " + err.Error()
 		e.dlq = append(e.dlq, lead)
 		e.mu.Unlock()
+
 		e.pacer.RecordOutcome(model.StatusFailed)
+		if e.repo != nil {
+			_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, model.StatusDLQ, lead.FailureReason, nil)
+		}
 		return
 	}
 
-	// 3. Retry with exponential backoff on Busy or No Answer if attempts remain
+	// 3. Retry with Exponential Backoff on Busy or No Answer if attempts remain
 	if status == model.StatusBusy || status == model.StatusNoAnswer {
 		if lead.Attempts < lead.MaxAttempts {
-			retryTime := time.Now().UTC().Add(15 * time.Minute)
+			// Exponential backoff: base 15m * 2^(attempts-1) with max 4h cap and 10% jitter
+			shift := lead.Attempts - 1
+			if shift > 5 {
+				shift = 5
+			}
+			delay := (15 * time.Minute) * time.Duration(1<<shift)
+			jitter := time.Duration(rand.Int63n(int64(delay / 10)))
+			retryTime := time.Now().UTC().Add(delay + jitter)
+
 			e.mu.Lock()
 			lead.NextAttemptAt = &retryTime
 			lead.Status = model.StatusQueued
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
+
+			// Record outcome exactly once
 			e.pacer.RecordOutcome(status)
+			if e.repo != nil {
+				_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, model.StatusQueued, "", &retryTime)
+			}
 			logger.L.Info("lead_retry_scheduled", "lead_id", lead.ID, "attempt", lead.Attempts, "retry_at", retryTime)
 			return
 		}
@@ -295,24 +382,41 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		lead.FailureReason = "EXHAUSTED_MAX_ATTEMPTS"
 		e.dlq = append(e.dlq, lead)
 		e.mu.Unlock()
+
+		// Record outcome exactly once
 		e.pacer.RecordOutcome(status)
+		if e.repo != nil {
+			_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, model.StatusDLQ, lead.FailureReason, nil)
+		}
 		logger.L.Warn("lead_routed_to_dlq_exhausted", "lead_id", lead.ID, "attempts", lead.Attempts)
 		return
 	}
 
-	e.mu.Lock()
-	lead.Status = status
-	e.mu.Unlock()
-	e.pacer.RecordOutcome(status)
+	if status == model.StatusVoicemail {
+		e.mu.Lock()
+		lead.Status = status
+		e.mu.Unlock()
+
+		e.pacer.RecordOutcome(status)
+		if e.repo != nil {
+			_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, status, "", nil)
+		}
+		return
+	}
 
 	if status == model.StatusAnswered {
-		// Attempt to allocate idle AI agent
+		// Attempt to allocate idle AI agent slot
 		if atomic.AddInt32(&e.idleAgents, -1) >= 0 {
-			// Successfully connected
+			// Successfully connected: record CONNECTED exactly once
 			e.mu.Lock()
 			lead.Status = model.StatusConnected
 			e.mu.Unlock()
+
+			e.pacer.RecordOutcome(model.StatusConnected)
 			metrics.DefaultMetrics.IncConnect()
+			if e.repo != nil {
+				_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, model.StatusConnected, "", nil)
+			}
 			logger.L.Info("call_connected", "lead_id", lead.ID, "campaign_id", e.campaign.ID)
 
 			// Simulate AI call handling (30ms - 60ms)
@@ -323,15 +427,27 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			atomic.AddInt32(&e.idleAgents, 1)
 		} else {
 			// No agent was available when customer answered -> Abandoned Call!
+			// Roll back idle counter and record ABANDONED exactly once
 			atomic.AddInt32(&e.idleAgents, 1)
 			e.mu.Lock()
 			lead.Status = model.StatusAbandoned
 			e.mu.Unlock()
-			metrics.DefaultMetrics.IncAbandon()
+
 			e.pacer.RecordOutcome(model.StatusAbandoned)
+			metrics.DefaultMetrics.IncAbandon()
+			if e.repo != nil {
+				_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, model.StatusAbandoned, "NO_AGENT_AVAILABLE", nil)
+			}
 			logger.L.Warn("call_abandoned", "lead_id", lead.ID, "campaign_id", e.campaign.ID)
 		}
+		return
 	}
+
+	// Fallback terminal status
+	e.mu.Lock()
+	lead.Status = status
+	e.mu.Unlock()
+	e.pacer.RecordOutcome(status)
 }
 
 // GetStats returns live statistical progress
@@ -370,13 +486,14 @@ func (e *CampaignEngine) GetDLQ() []model.Lead {
 	return out
 }
 
-// Stop gracefully terminates campaign execution and drains active workers
+// Stop gracefully terminates campaign execution and drains active workers safely
 func (e *CampaignEngine) Stop() {
 	e.stopOnce.Do(func() {
 		e.mu.Lock()
 		e.campaign.Status = model.CampaignPaused
 		e.isClosed = true
 		e.mu.Unlock()
+
 		e.cancel()
 		close(e.stopCh)
 		e.wg.Wait()

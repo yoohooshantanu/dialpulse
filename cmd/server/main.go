@@ -18,6 +18,7 @@ import (
 	"github.com/yoohooshantanu/dialpulse/internal/metrics"
 	"github.com/yoohooshantanu/dialpulse/internal/model"
 	"github.com/yoohooshantanu/dialpulse/internal/queue"
+	"github.com/yoohooshantanu/dialpulse/internal/storage"
 	"github.com/yoohooshantanu/dialpulse/internal/timezone"
 )
 
@@ -33,16 +34,35 @@ type ServerState struct {
 	campaigns map[string]*queue.CampaignEngine
 	dncFilter *dnc.BloomFilter
 	tzGov     *timezone.TimezoneGovernor
+	repo      storage.CampaignRepository
 }
 
 func main() {
 	port := getEnv("PORT", "8086")
 	logger.L.Info("starting_dialpulse_engine", "port", port)
 
+	// Connect to PostgreSQL persistence layer if DATABASE_URL is configured
+	databaseURL := os.Getenv("DATABASE_URL")
+	var repo storage.CampaignRepository
+	if databaseURL != "" {
+		pgRepo, err := storage.NewPostgresRepositoryFromURL(context.Background(), databaseURL)
+		if err != nil {
+			logger.L.Warn("postgres_connection_failed_fallback_to_memory", "error", err)
+			repo = storage.NewMemoryPostgresRepository()
+		} else {
+			repo = pgRepo
+		}
+	} else {
+		logger.L.Info("no_database_url_provided_using_memory_repository")
+		repo = storage.NewMemoryPostgresRepository()
+	}
+	defer repo.Close()
+
 	state := &ServerState{
 		campaigns: make(map[string]*queue.CampaignEngine),
 		dncFilter: dnc.NewBloomFilter(1000000, 0.001),
 		tzGov:     timezone.NewTimezoneGovernor(),
+		repo:      repo,
 	}
 
 	mux := http.NewServeMux()
@@ -70,7 +90,12 @@ func main() {
 		req.Status = model.CampaignDraft
 		req.CreatedAt = time.Now().UTC()
 
+		if err := state.repo.SaveCampaign(r.Context(), &req); err != nil {
+			logger.L.Error("failed_saving_campaign", "error", err)
+		}
+
 		engine := queue.NewCampaignEngine(&req, state.dncFilter, state.tzGov, nil)
+		engine.SetRepository(state.repo)
 
 		state.mu.Lock()
 		state.campaigns[req.ID] = engine
@@ -185,8 +210,8 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"added":       len(req.PhoneNumbers),
-			"total_dnc":   state.dncFilter.Count(),
+			"added":     len(req.PhoneNumbers),
+			"total_dnc": state.dncFilter.Count(),
 		})
 	})
 

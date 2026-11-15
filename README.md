@@ -4,7 +4,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/yoohooshantanu/dialpulse)](https://goreportcard.com/report/github.com/yoohooshantanu/dialpulse)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**DialPulse** is a high-throughput, distributed predictive campaign dialer written in Go. Designed for enterprise voice AI platforms (sales qualification, automated appointments, customer surveys), DialPulse balances maximum AI agent utilization with strict regulatory compliance: **sub-microsecond Do-Not-Call (DNC) screening via Bloom filters**, **mathematical Erlang-C pacing guaranteeing $<2.5\%$ FTC call abandonment caps**, **idempotent lead ingestion**, **Dead-Letter Queue (DLQ) failure categorization**, and **PostgreSQL persistence**.
+**DialPulse** is a high-throughput, distributed predictive campaign dialer written in Go. Designed for enterprise voice AI platforms (sales qualification, automated appointments, customer surveys), DialPulse balances maximum AI agent utilization with strict regulatory compliance: **sub-microsecond Do-Not-Call (DNC) screening via Bloom filters**, **Little's Law-inspired dynamic pacing heuristics with FTC abandonment braking**, **in-flight ringing capacity reservations**, **exactly-once call disposition accounting**, **database-level idempotent lead ingestion**, and **production PostgreSQL persistence (`pgx/v5`)**.
 
 ---
 
@@ -13,72 +13,76 @@
 ```
                                       DIALPULSE CAMPAIGN ENGINE
                                       
-  Lead Ingestion ────► [ Idempotency & Deduplication ] ────► [ Priority Queue ]
-   (REST / Batch)              │                                      │
-                               ▼                                      ▼
-                      [ PostgreSQL Store ]                  [ Scheduling Ticker ]
-                                                                      │
-                                                                      ▼
-                                                            [ Predictive Pacer ]
-                                                            (Erlang-C / Little's Law)
-                                                             - Rolling Answer Rate
-                                                             - Agents Freeing Soon
-                                                             - Abandonment Rate Brake
-                                                                      │
-                                                          [ Target Dials Needed: M ]
-                                                                      │
-                                                                      ▼
-                                                        ┌───────────────────────────────┐
-                                                        │   Pre-Call Compliance Gate    │
-                                                        ├───────────────────────────────┤
-                                                        │ 1. DNC Bloom Filter (<1µs)    │
-                                                        │ 2. Timezone Governor (TCPA)   │
-                                                        └───────────────┬───────────────┘
-                                                                        │ [ Verified Safe ]
-                                                                        ▼
-                                                            [ Carrier Trunk Dispatch ]
-                                                              (Concurrent Dialers)
-                                                                        │
-                                      ┌─────────────────────────────────┴─────────────────────────────────┐
-                                      ▼                                                                   ▼
-                              [ Call Answered ]                                                   [ Unanswered / AMD ]
-                                      │                                                        (Voicemail, Busy, No-Ans)
-                                      ▼                                                                   │
-                         [ Agent Slot Available? ]                                                        ▼
-                                /           \                                                   [ Retry Backoff or DLQ ]
-                             YES             NO                                              (Exhausted max attempts -> DLQ)
-                              │               │
-                              ▼               ▼
-                      [ CONNECTED ]     [ ABANDONED ] ──► (Throttles Pacer Multiplier)
+  Lead Ingestion ────► [ Atomic DB Upsert ] ────► [ In-Memory Phone Index ] ────► [ Priority Queue ]
+   (REST / Batch)     (PostgreSQL pgx/v5)             (Fast O(1) Dedupe)                   │
+                               │                                                           ▼
+                               ▼                                                [ Scheduling Ticker ]
+                     [ PostgreSQL Store ]                                                  │
+                                                                                           ▼
+                                                                                [ Dynamic Pacer ]
+                                                                             (Little's Law Heuristic)
+                                                                             - Rolling Answer Rate
+                                                                             - Agents Freeing Soon
+                                                                             - Abandonment Rate Brake
+                                                                                           │
+                                                                           [ Gross Dials Needed: M ]
+                                                                                           │
+                                                                           [ In-Flight Ringing Reserve ]
+                                                                             (Net Dials = M - InFlight)
+                                                                                           │
+                                                                                           ▼
+                                                                           ┌───────────────────────────────┐
+                                                                           │   Pre-Call Compliance Gate    │
+                                                                           ├───────────────────────────────┤
+                                                                           │ 1. DNC Bloom Filter (<1µs)    │
+                                                                           │ 2. Timezone Governor (TCPA)   │
+                                                                           └───────────────┬───────────────┘
+                                                                                           │ [ Verified Safe ]
+                                                                                           ▼
+                                                                               [ Carrier Trunk Dispatch ]
+                                                                                 (Concurrent Dialers)
+                                                                                           │
+                                         ┌─────────────────────────────────────────────────┴─────────────────────────────────┐
+                                         ▼                                                                                   ▼
+                                 [ Call Answered ]                                                                   [ Unanswered / AMD ]
+                                         │                                                                        (Voicemail, Busy, No-Ans)
+                                         ▼                                                                                   │
+                            [ Agent Slot Available? ]                                                                        ▼
+                                   /           \                                                                  [ Retry Backoff or DLQ ]
+                                YES             NO                                                             (Exhausted max attempts -> DLQ)
+                                 │               │
+                                 ▼               ▼
+                         [ CONNECTED ]     [ ABANDONED ] ──► (Throttles Pacer Multiplier)
 ```
 
 ---
 
 ## Core Technical Features
 
-1. **Predictive Pacing Engine (Erlang-C Queue Modeling)**:
-   - Evaluates rolling answer rates, call handle times, and expected line completions during ringing windows.
-   - Automatically throttles dial multipliers to prevent exceeding the legal FTC $<3.0\%$ call abandonment limit.
-2. **Sub-Microsecond Do-Not-Call (DNC) Bloom Filter**:
-   - High-performance bitset Bloom filter using Kirsch-Mitzenmacher double-hashing (FNV-1a).
+1. **Dynamic Pacing Engine (Little's Law & Erlang-C Capacity Heuristics)**:
+   - Models queue completion during carrier ring windows:
+     $$\text{EffectiveCapacity} = \text{IdleAgents} + \text{ActiveCalls} \times \left(\frac{\text{AverageRingSec}}{\text{AverageHandleSec}}\right)$$
+   - Evaluates Bayesian-weighted rolling answer rates with an automated quadratic braking multiplier that throttles dialing down to progressive mode ($1:1$) if the rolling abandonment rate approaches the legal FTC $<3.0\%$ cap.
+2. **In-Flight Ringing Capacity Reservation**:
+   - Explicitly accounts for outstanding outbound calls ringing on carrier trunks (`inFlightDials`).
+   - Subtracts currently ringing calls from the dispatch budget ($\text{NetDials} = \text{GrossDials} - \text{InFlightDials}$), preventing consecutive 50ms ticker bursts from oversaturating agent capacity.
+3. **Exactly-Once Disposition & Outcome Accounting**:
+   - Records one definitive terminal disposition per dial attempt (`CONNECTED`, `ABANDONED`, `BUSY`, `NO_ANSWER`, `VOICEMAIL`, or `FAILED`).
+   - Eliminates double-counting in statistical pacer feedback loops.
+4. **Sub-Microsecond Do-Not-Call (DNC) Bloom Filter**:
+   - Bitset Bloom filter using Kirsch-Mitzenmacher double-hashing (FNV-1a).
    - Screens phone numbers in **~520 nanoseconds** with zero disk I/O and $<0.01\%$ false-positive probability.
-3. **Time-Zone & Regulatory Curfew Governor**:
+5. **Time-Zone & Regulatory Curfew Governor**:
    - Inspects North American area codes (NPA) to localize recipient time zones across Eastern, Central, Mountain, Pacific, Alaska, and Hawaii.
-   - Strictly enforces the federal 08:00 AM – 09:00 PM permissible telemarketing window, holding off off-hours leads without CPU busy-spinning.
-4. **Idempotent Lead Ingestion & Deduplication**:
-   - Deduplicates leads on campaign-scoped normalized E.164 phone numbers (`phoneIndex`).
-   - Idempotently reports `accepted` count and `duplicates_skipped` without duplicating dials or corrupting queue ordering.
-5. **Dead-Letter Queue (DLQ) & Failure Categorization**:
-   - Routes permanently unserviceable leads to a dedicated DLQ (`DEAD_LETTER_QUEUE`).
-   - Categorizes failures with structured codes: `DNC_PROHIBITED`, `CARRIER_UNREACHABLE`, and `EXHAUSTED_MAX_ATTEMPTS`.
-   - Inspection endpoint (`GET /v1/campaigns/{id}/dlq`) enables operators to analyze churn and purge bad records.
-6. **PostgreSQL Persistence Layer**:
-   - Production SQL schema (`migrations/001_init.sql`) covering `campaigns`, `leads`, and `call_attempts`.
-   - Enforces unique constraint `uq_campaign_phone (campaign_id, phone_number)` for database-level idempotency and composite indexing for high-speed dispatch queries.
-7. **Multi-Campaign Concurrency Isolation**:
-   - Complete thread-safe memory and worker pool isolation across concurrent running campaigns.
-8. **Real-Time Telemetry & Prometheus Sidecar**:
-   - Real-time tracking of dial rates, connect rates, abandonment rates, DNC blocks, and timezone curfew drops via `/metrics` and `/healthz`.
+   - Strictly enforces the federal 08:00 AM – 09:00 PM permissible telemarketing window, holding off off-hours leads with future-dated retry timestamps without CPU busy-spinning.
+6. **PostgreSQL Persistence & Idempotency Layer (`pgx/v5`)**:
+   - Production SQL schema ([`migrations/001_init.sql`](migrations/001_init.sql)) covering `campaigns`, `leads`, and `call_attempts`.
+   - Enforces unique constraint `uq_campaign_phone (campaign_id, phone_number)` at the database engine level via `ON CONFLICT DO NOTHING`, paired with in-memory phone indexing.
+7. **Dead-Letter Queue (DLQ) & Failure Categorization**:
+   - Routes permanently unserviceable leads to `DEAD_LETTER_QUEUE` with structured error codes (`DNC_PROHIBITED`, `CARRIER_TRUNK_ERROR`, `EXHAUSTED_MAX_ATTEMPTS`).
+   - Exposed via inspection endpoint `GET /v1/campaigns/{id}/dlq`.
+8. **Thread-Safe Campaign Lifecycle**:
+   - Mutex-guarded `Start()` and `Stop()` routines preventing duplicate ticker loops and worker `sync.WaitGroup` races.
 
 ---
 
@@ -86,7 +90,7 @@
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `POST` | `/v1/campaigns` | Creates a new outbound campaign |
+| `POST` | `/v1/campaigns` | Creates a new outbound campaign & persists to PostgreSQL |
 | `POST` | `/v1/campaigns/{id}/leads` | Idempotent batch lead ingestion (`accepted`, `duplicates`) |
 | `GET` | `/v1/campaigns/{id}/leads/{lead_id}` | Retrieves individual lead status & attempt history |
 | `GET` | `/v1/campaigns/{id}/dlq` | Inspects dead-letter queue leads and failure reasons |
@@ -126,7 +130,7 @@ Services:
 
 ## Verification & Testing
 
-Run all 10 unit and integration tests:
+Run all 13 unit and integration tests:
 
 ```bash
 $env:CGO_ENABLED="0"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"
@@ -141,10 +145,6 @@ Benchmarks executed on AMD Ryzen 5 (Offline Go 1.27.0):
 BenchmarkDNCBloomFilterLookup-8         2,480,710 ops/sec    520.9 ns/op     24 B/op    2 allocs/op
 BenchmarkPredictivePacerCalculation-8   5,678,142 ops/sec    255.4 ns/op     32 B/op    3 allocs/op
 ```
-
-> **Key Performance Takeaways:**
-> - **DNC Bloom Filter Screening:** Executes in **520.9 nanoseconds** (0.00052 ms), screening ~2.5 million phone numbers per second in local memory.
-> - **Predictive Pacing Evaluation:** Dynamic Erlang-C mathematical pacing takes **255.4 nanoseconds**, recalculating line multipliers without locking bottlenecks.
 
 Compile local binary:
 
