@@ -14,6 +14,7 @@ type Metrics struct {
 	TotalTimezoneBlocks   uint64
 	TotalLeadsIngested    uint64
 	ActiveDialingRoutines int64
+	StorageErrors         uint64
 }
 
 var DefaultMetrics = NewMetrics()
@@ -54,6 +55,10 @@ func (m *Metrics) DecActiveDialer() {
 	atomic.AddInt64(&m.ActiveDialingRoutines, -1)
 }
 
+func (m *Metrics) IncStorageErrors() {
+	atomic.AddUint64(&m.StorageErrors, 1)
+}
+
 func (m *Metrics) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		dials := atomic.LoadUint64(&m.TotalDials)
@@ -63,6 +68,7 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		tz := atomic.LoadUint64(&m.TotalTimezoneBlocks)
 		leads := atomic.LoadUint64(&m.TotalLeadsIngested)
 		active := atomic.LoadInt64(&m.ActiveDialingRoutines)
+		storageErrs := atomic.LoadUint64(&m.StorageErrors)
 
 		abandonRate := float64(0)
 		if connects+abandons > 0 {
@@ -101,5 +107,9 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		fmt.Fprintf(w, "# HELP dialpulse_active_dialers Active background dialing workers\n")
 		fmt.Fprintf(w, "# TYPE dialpulse_active_dialers gauge\n")
 		fmt.Fprintf(w, "dialpulse_active_dialers %d\n", active)
+
+		fmt.Fprintf(w, "# HELP dialpulse_storage_errors Total persistence errors during dispatch\n")
+		fmt.Fprintf(w, "# TYPE dialpulse_storage_errors counter\n")
+		fmt.Fprintf(w, "dialpulse_storage_errors %d\n", storageErrs)
 	}
 }

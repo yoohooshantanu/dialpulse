@@ -3,6 +3,8 @@ package tests
 import (
 	"context"
 	"fmt"
+	"os"
+	"github.com/google/uuid"
 	"testing"
 	"time"
 
@@ -642,5 +644,76 @@ func TestDatabaseDuplicateRejectedAfterRestart(t *testing.T) {
 	// Verify lead was never stored in engine2 memory
 	if _, ok := engine2.GetLead(lead2.ID); ok {
 		t.Errorf("duplicate lead must NOT exist in restarted engine memory")
+	}
+}
+
+
+func TestLivePostgresRestartIdempotency(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	campID := "camp_live_pg_" + uuid.NewString()[:8]
+	camp := &model.Campaign{
+		ID:                campID,
+		Name:              "Live PG Test",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+	}
+
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign to live postgres: %v", err)
+	}
+
+	// 1. Initial engine run: ingest lead
+	engine1 := queue.NewCampaignEngine(camp, nil, nil, nil)
+	engine1.SetRepository(pgRepo)
+
+	lead1 := &model.Lead{
+		ID:          "lead_live_1",
+		PhoneNumber: "+1 (415) 555-0999",
+		Priority:    50,
+	}
+	accepted1, dups1, err1 := engine1.IngestLeads(ctx, []*model.Lead{lead1})
+	if err1 != nil || accepted1 != 1 || dups1 != 0 {
+		t.Fatalf("engine1 live postgres ingest failed: accepted=%d, dups=%d, err=%v", accepted1, dups1, err1)
+	}
+
+	// 2. Restart engine: new instance with empty in-memory state, connected to same live PostgreSQL
+	engine2 := queue.NewCampaignEngine(camp, nil, nil, nil)
+	engine2.SetRepository(pgRepo)
+
+	lead2 := &model.Lead{
+		ID:          "lead_live_dup",
+		PhoneNumber: "14155550999", // Same normalized phone number
+		Priority:    90,
+	}
+	accepted2, dups2, err2 := engine2.IngestLeads(ctx, []*model.Lead{lead2})
+	if err2 != nil {
+		t.Fatalf("live postgres engine2 ingest error: %v", err2)
+	}
+
+	// Live PostgreSQL ON CONFLICT (campaign_id, phone_number) MUST reject the duplicate
+	if accepted2 != 0 {
+		t.Errorf("live postgres: expected 0 accepted leads on duplicate restart, got %d", accepted2)
+	}
+	if dups2 != 1 {
+		t.Errorf("live postgres: expected 1 duplicate from db conflict, got %d", dups2)
+	}
+
+	stats2 := engine2.GetStats()
+	if stats2.TotalLeads != 0 {
+		t.Errorf("live postgres: expected 0 leads in restarted engine memory, got %d", stats2.TotalLeads)
 	}
 }

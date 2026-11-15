@@ -286,6 +286,24 @@ func (e *CampaignEngine) tick() {
 	e.mu.Unlock()
 }
 
+
+// persistCallOutcome updates lead status and records call attempts in PostgreSQL with explicit error tracking
+func (e *CampaignEngine) persistCallOutcome(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt) {
+	if e.repo == nil {
+		return
+	}
+	if err := e.repo.UpdateLeadStatus(ctx, leadID, status, reason, nextAttempt); err != nil {
+		metrics.DefaultMetrics.IncStorageErrors()
+		logger.L.Error("failed_updating_lead_status", "lead_id", leadID, "status", status, "error", err)
+	}
+	if attempt != nil {
+		if err := e.repo.RecordCallAttempt(ctx, attempt); err != nil {
+			metrics.DefaultMetrics.IncStorageErrors()
+			logger.L.Error("failed_recording_call_attempt", "lead_id", leadID, "error", err)
+		}
+	}
+}
+
 func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	defer e.wg.Done()
 	defer atomic.AddInt32(&e.inFlightDials, -1)
@@ -365,19 +383,16 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		e.mu.Unlock()
 
 		e.pacer.RecordOutcome(model.StatusFailed)
-		if e.repo != nil {
-			_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, finalStatus, attemptErr, nil)
-			_ = e.repo.RecordCallAttempt(context.Background(), &model.CallAttempt{
-				ID:             uuid.NewString(),
-				CampaignID:     e.campaign.ID,
-				LeadID:         lead.ID,
-				PhoneNumber:    lead.PhoneNumber,
-				Status:         finalStatus,
-				RingDurationMs: int(ringDuration.Milliseconds()),
-				ErrorMessage:   attemptErr,
-				CreatedAt:      time.Now().UTC(),
-			})
-		}
+		e.persistCallOutcome(context.Background(), lead.ID, finalStatus, attemptErr, nil, &model.CallAttempt{
+			ID:             uuid.NewString(),
+			CampaignID:     e.campaign.ID,
+			LeadID:         lead.ID,
+			PhoneNumber:    lead.PhoneNumber,
+			Status:         finalStatus,
+			RingDurationMs: int(ringDuration.Milliseconds()),
+			ErrorMessage:   attemptErr,
+			CreatedAt:      time.Now().UTC(),
+		})
 		return
 	}
 
@@ -402,18 +417,15 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 
 			// Record outcome exactly once
 			e.pacer.RecordOutcome(status)
-			if e.repo != nil {
-				_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, finalStatus, "", &retryTime)
-				_ = e.repo.RecordCallAttempt(context.Background(), &model.CallAttempt{
-					ID:             uuid.NewString(),
-					CampaignID:     e.campaign.ID,
-					LeadID:         lead.ID,
-					PhoneNumber:    lead.PhoneNumber,
-					Status:         status,
-					RingDurationMs: int(ringDuration.Milliseconds()),
-					CreatedAt:      time.Now().UTC(),
-				})
-			}
+			e.persistCallOutcome(context.Background(), lead.ID, finalStatus, "", &retryTime, &model.CallAttempt{
+				ID:             uuid.NewString(),
+				CampaignID:     e.campaign.ID,
+				LeadID:         lead.ID,
+				PhoneNumber:    lead.PhoneNumber,
+				Status:         status,
+				RingDurationMs: int(ringDuration.Milliseconds()),
+				CreatedAt:      time.Now().UTC(),
+			})
 			logger.L.Info("lead_retry_scheduled", "lead_id", lead.ID, "attempt", lead.Attempts, "retry_at", retryTime)
 			return
 		}
@@ -429,19 +441,16 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 
 		// Record outcome exactly once
 		e.pacer.RecordOutcome(status)
-		if e.repo != nil {
-			_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, finalStatus, attemptErr, nil)
-			_ = e.repo.RecordCallAttempt(context.Background(), &model.CallAttempt{
-				ID:             uuid.NewString(),
-				CampaignID:     e.campaign.ID,
-				LeadID:         lead.ID,
-				PhoneNumber:    lead.PhoneNumber,
-				Status:         finalStatus,
-				RingDurationMs: int(ringDuration.Milliseconds()),
-				ErrorMessage:   attemptErr,
-				CreatedAt:      time.Now().UTC(),
-			})
-		}
+		e.persistCallOutcome(context.Background(), lead.ID, finalStatus, attemptErr, nil, &model.CallAttempt{
+			ID:             uuid.NewString(),
+			CampaignID:     e.campaign.ID,
+			LeadID:         lead.ID,
+			PhoneNumber:    lead.PhoneNumber,
+			Status:         finalStatus,
+			RingDurationMs: int(ringDuration.Milliseconds()),
+			ErrorMessage:   attemptErr,
+			CreatedAt:      time.Now().UTC(),
+		})
 		logger.L.Warn("lead_routed_to_dlq_exhausted", "lead_id", lead.ID, "attempts", lead.Attempts)
 		return
 	}
@@ -453,18 +462,15 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		e.mu.Unlock()
 
 		e.pacer.RecordOutcome(status)
-		if e.repo != nil {
-			_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, finalStatus, "", nil)
-			_ = e.repo.RecordCallAttempt(context.Background(), &model.CallAttempt{
-				ID:             uuid.NewString(),
-				CampaignID:     e.campaign.ID,
-				LeadID:         lead.ID,
-				PhoneNumber:    lead.PhoneNumber,
-				Status:         finalStatus,
-				RingDurationMs: int(ringDuration.Milliseconds()),
-				CreatedAt:      time.Now().UTC(),
-			})
-		}
+		e.persistCallOutcome(context.Background(), lead.ID, finalStatus, "", nil, &model.CallAttempt{
+			ID:             uuid.NewString(),
+			CampaignID:     e.campaign.ID,
+			LeadID:         lead.ID,
+			PhoneNumber:    lead.PhoneNumber,
+			Status:         finalStatus,
+			RingDurationMs: int(ringDuration.Milliseconds()),
+			CreatedAt:      time.Now().UTC(),
+		})
 		return
 	}
 
@@ -489,19 +495,16 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			}
 			atomic.AddInt32(&e.idleAgents, 1)
 
-			if e.repo != nil {
-				_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, finalStatus, "", nil)
-				_ = e.repo.RecordCallAttempt(context.Background(), &model.CallAttempt{
-					ID:             uuid.NewString(),
-					CampaignID:     e.campaign.ID,
-					LeadID:         lead.ID,
-					PhoneNumber:    lead.PhoneNumber,
-					Status:         finalStatus,
-					RingDurationMs: int(ringDuration.Milliseconds()),
-					TalkDurationMs: int(talkDuration.Milliseconds()),
-					CreatedAt:      time.Now().UTC(),
-				})
-			}
+			e.persistCallOutcome(context.Background(), lead.ID, finalStatus, "", nil, &model.CallAttempt{
+				ID:             uuid.NewString(),
+				CampaignID:     e.campaign.ID,
+				LeadID:         lead.ID,
+				PhoneNumber:    lead.PhoneNumber,
+				Status:         finalStatus,
+				RingDurationMs: int(ringDuration.Milliseconds()),
+				TalkDurationMs: int(talkDuration.Milliseconds()),
+				CreatedAt:      time.Now().UTC(),
+			})
 		} else {
 			// No agent was available when customer answered -> Abandoned Call!
 			atomic.AddInt32(&e.idleAgents, 1)
@@ -516,19 +519,16 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			metrics.DefaultMetrics.IncAbandon()
 			logger.L.Warn("call_abandoned", "lead_id", lead.ID, "campaign_id", e.campaign.ID)
 
-			if e.repo != nil {
-				_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, finalStatus, attemptErr, nil)
-				_ = e.repo.RecordCallAttempt(context.Background(), &model.CallAttempt{
-					ID:             uuid.NewString(),
-					CampaignID:     e.campaign.ID,
-					LeadID:         lead.ID,
-					PhoneNumber:    lead.PhoneNumber,
-					Status:         finalStatus,
-					RingDurationMs: int(ringDuration.Milliseconds()),
-					ErrorMessage:   attemptErr,
-					CreatedAt:      time.Now().UTC(),
-				})
-			}
+			e.persistCallOutcome(context.Background(), lead.ID, finalStatus, attemptErr, nil, &model.CallAttempt{
+				ID:             uuid.NewString(),
+				CampaignID:     e.campaign.ID,
+				LeadID:         lead.ID,
+				PhoneNumber:    lead.PhoneNumber,
+				Status:         finalStatus,
+				RingDurationMs: int(ringDuration.Milliseconds()),
+				ErrorMessage:   attemptErr,
+				CreatedAt:      time.Now().UTC(),
+			})
 		}
 		return
 	}
