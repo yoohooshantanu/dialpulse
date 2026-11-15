@@ -37,6 +37,61 @@ type ServerState struct {
 	repo      storage.CampaignRepository
 }
 
+func (s *ServerState) recoverCampaigns(ctx context.Context) error {
+	camps, err := s.repo.ListActiveCampaigns(ctx)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, camp := range camps {
+		engine := queue.NewCampaignEngine(camp, s.dncFilter, s.tzGov, nil)
+		engine.SetRepository(s.repo)
+		leads, err := s.repo.GetActiveLeads(ctx, camp.ID)
+		if err == nil && len(leads) > 0 {
+			engine.HydrateLeads(leads)
+		}
+		s.campaigns[camp.ID] = engine
+		logger.L.Info("campaign_recovered_on_startup",
+			"campaign_id", camp.ID,
+			"leads_loaded", len(leads),
+		)
+	}
+	return nil
+}
+
+func (s *ServerState) getOrHydrateCampaign(ctx context.Context, campaignID string) (*queue.CampaignEngine, error) {
+	s.mu.RLock()
+	engine, ok := s.campaigns[campaignID]
+	s.mu.RUnlock()
+	if ok {
+		return engine, nil
+	}
+
+	// Lazy recovery from storage if created by another instance or prior to server startup
+	camp, err := s.repo.GetCampaign(ctx, campaignID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if engine, ok := s.campaigns[campaignID]; ok {
+		return engine, nil
+	}
+
+	engine = queue.NewCampaignEngine(camp, s.dncFilter, s.tzGov, nil)
+	engine.SetRepository(s.repo)
+	leads, err := s.repo.GetActiveLeads(ctx, camp.ID)
+	if err == nil && len(leads) > 0 {
+		engine.HydrateLeads(leads)
+	}
+	s.campaigns[campaignID] = engine
+	logger.L.Info("campaign_lazy_hydrated", "campaign_id", campaignID, "leads_loaded", len(leads))
+	return engine, nil
+}
+
 func main() {
 	port := getEnv("PORT", "8086")
 	logger.L.Info("starting_dialpulse_engine", "port", port)
@@ -64,6 +119,13 @@ func main() {
 		tzGov:     timezone.NewTimezoneGovernor(),
 		repo:      repo,
 	}
+
+	// Recover existing active campaigns and leads from storage on startup
+	recoverCtx, cancelRecover := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := state.recoverCampaigns(recoverCtx); err != nil {
+		logger.L.Warn("campaign_recovery_partial_or_empty", "error", err)
+	}
+	cancelRecover()
 
 	mux := http.NewServeMux()
 
@@ -117,11 +179,8 @@ func main() {
 		}
 
 		campaignID := parts[2]
-		state.mu.RLock()
-		engine, ok := state.campaigns[campaignID]
-		state.mu.RUnlock()
-
-		if !ok {
+		engine, err := state.getOrHydrateCampaign(r.Context(), campaignID)
+		if err != nil || engine == nil {
 			http.Error(w, `{"error":"campaign not found"}`, http.StatusNotFound)
 			return
 		}

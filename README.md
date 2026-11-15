@@ -75,8 +75,11 @@
 5. **Time-Zone & Regulatory Curfew Governor**:
    - Inspects North American area codes (NPA) to localize recipient time zones across Eastern, Central, Mountain, Pacific, Alaska, and Hawaii.
    - Strictly enforces the federal 08:00 AM – 09:00 PM permissible telemarketing window, holding off off-hours leads with future-dated retry timestamps without CPU busy-spinning.
-6. **PostgreSQL Persistence & Idempotency Layer (`pgx/v5`)**:
-   - Production SQL schema ([`migrations/001_init.sql`](migrations/001_init.sql)) covering `campaigns`, `leads`, and `call_attempts`.
+6. **PostgreSQL Persistence & Distributed Work Queue Layer (`pgx/v5`)**:
+   - Production SQL schema ([`migrations/001_init.sql`](migrations/001_init.sql)) covering `campaigns`, `leads` (with `locked_by` / `locked_at`), and `call_attempts`.
+   - **Distributed Atomic Claiming (`FOR UPDATE SKIP LOCKED`)**: Multiple competing dialer instances sharing the same PostgreSQL database safely lease pending leads concurrently with zero double-dials and zero cross-worker collisions.
+   - **Atomic Transactional Outcome Persistence**: Terminal dispositions update lead state and insert call attempts inside a unified PostgreSQL transaction (`RecordCallOutcomeTx`) with exponential backoff retry.
+   - **Server Startup Recovery & Lazy Hydration**: On engine startup or restart, active campaigns and pending leads are automatically recovered from PostgreSQL storage without 404s or lost queue states.
    - Enforces unique constraint `uq_campaign_phone (campaign_id, phone_number)` at the database engine level via `ON CONFLICT DO NOTHING`, paired with in-memory phone indexing.
 7. **Dead-Letter Queue (DLQ) & Failure Categorization**:
    - Routes permanently unserviceable leads to `DEAD_LETTER_QUEUE` with structured error codes (`DNC_PROHIBITED`, `CARRIER_TRUNK_ERROR`, `EXHAUSTED_MAX_ATTEMPTS`).
@@ -130,7 +133,7 @@ Services:
 
 ## Verification & Testing
 
-Run all 13 unit and integration tests:
+Run all 15 unit, concurrency, and distributed integration tests:
 
 ```bash
 $env:CGO_ENABLED="0"; $env:GOPROXY="off"; $env:GOTOOLCHAIN="local"

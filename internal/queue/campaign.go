@@ -287,21 +287,53 @@ func (e *CampaignEngine) tick() {
 }
 
 
-// persistCallOutcome updates lead status and records call attempts in PostgreSQL with explicit error tracking
+// persistCallOutcome updates lead status and records call attempts in PostgreSQL with atomic transactional persistence and error tracking
 func (e *CampaignEngine) persistCallOutcome(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt) {
 	if e.repo == nil {
 		return
 	}
-	if err := e.repo.UpdateLeadStatus(ctx, leadID, status, reason, nextAttempt); err != nil {
+	if err := e.repo.RecordCallOutcomeTx(ctx, leadID, status, reason, nextAttempt, attempt); err != nil {
 		metrics.DefaultMetrics.IncStorageErrors()
-		logger.L.Error("failed_updating_lead_status", "lead_id", leadID, "status", status, "error", err)
+		logger.L.Error("failed_recording_call_outcome_tx", "lead_id", leadID, "status", status, "error", err)
 	}
-	if attempt != nil {
-		if err := e.repo.RecordCallAttempt(ctx, attempt); err != nil {
-			metrics.DefaultMetrics.IncStorageErrors()
-			logger.L.Error("failed_recording_call_attempt", "lead_id", leadID, "error", err)
+}
+
+// HydrateLeads restores leads from storage into the engine's memory structures on server startup or recovery
+func (e *CampaignEngine) HydrateLeads(leads []*model.Lead) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, l := range leads {
+		normPhone := dnc.NormalizeNumber(l.PhoneNumber)
+		if normPhone == "" {
+			normPhone = l.PhoneNumber
+		}
+		if _, exists := e.phoneIndex[normPhone]; exists {
+			continue
+		}
+		e.phoneIndex[normPhone] = l.ID
+		e.leads[l.ID] = l
+		if l.Status == model.StatusQueued || l.Status == "" || l.Status == "DRAFT" {
+			e.pendingQueue = append(e.pendingQueue, l)
+		} else if l.Status == model.StatusDLQ {
+			e.dlq = append(e.dlq, l)
 		}
 	}
+
+	sort.Slice(e.pendingQueue, func(i, j int) bool {
+		if e.pendingQueue[i].Priority != e.pendingQueue[j].Priority {
+			return e.pendingQueue[i].Priority > e.pendingQueue[j].Priority
+		}
+		return e.pendingQueue[i].CreatedAt.Before(e.pendingQueue[j].CreatedAt)
+	})
+}
+
+// ClaimBatchDistributed performs atomic database-level lead claiming using SELECT FOR UPDATE SKIP LOCKED
+func (e *CampaignEngine) ClaimBatchDistributed(ctx context.Context, limit int, workerID string) ([]*model.Lead, error) {
+	if e.repo == nil {
+		return nil, fmt.Errorf("no persistent repository configured for distributed claiming")
+	}
+	return e.repo.ClaimPendingLeads(ctx, e.campaign.ID, limit, workerID)
 }
 
 func (e *CampaignEngine) dispatchLead(lead *model.Lead) {

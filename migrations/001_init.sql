@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS leads (
     attempts INT NOT NULL DEFAULT 0,
     max_attempts INT NOT NULL DEFAULT 3,
     failure_reason VARCHAR(255),
+    locked_by VARCHAR(64),
+    locked_at TIMESTAMPTZ,
     last_attempt_at TIMESTAMPTZ,
     next_attempt_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

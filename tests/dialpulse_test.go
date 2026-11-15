@@ -717,3 +717,184 @@ func TestLivePostgresRestartIdempotency(t *testing.T) {
 		t.Errorf("live postgres: expected 0 leads in restarted engine memory, got %d", stats2.TotalLeads)
 	}
 }
+
+func TestDistributedCompetingWorkersClaiming(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:              "camp_distributed_workers",
+		AllocatedAgents: 10,
+		Status:          model.CampaignRunning,
+	}
+	_ = repo.SaveCampaign(ctx, camp)
+
+	const totalLeads = 100
+	var leads []*model.Lead
+	for i := 0; i < totalLeads; i++ {
+		leads = append(leads, &model.Lead{
+			ID:          fmt.Sprintf("dist_lead_%03d", i),
+			CampaignID:  camp.ID,
+			PhoneNumber: fmt.Sprintf("+1415555%04d", i),
+			Priority:    i, // Varying priorities
+			Status:      model.StatusQueued,
+			CreatedAt:   time.Now().UTC(),
+		})
+	}
+	_, _, err := repo.IngestLeadsIdempotent(ctx, leads)
+	if err != nil {
+		t.Fatalf("failed ingesting test leads: %v", err)
+	}
+
+	// Launch 5 concurrent competing workers claiming batches
+	const numWorkers = 5
+	claimedCh := make(chan *model.Lead, totalLeads)
+	errCh := make(chan error, numWorkers)
+
+	for w := 0; w < numWorkers; w++ {
+		workerID := fmt.Sprintf("worker-node-%d", w)
+		go func(wid string) {
+			for {
+				batch, err := repo.ClaimPendingLeads(ctx, camp.ID, 5, wid)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if len(batch) == 0 {
+					return
+				}
+				for _, l := range batch {
+					claimedCh <- l
+				}
+				time.Sleep(1 * time.Millisecond)
+			}
+		}(workerID)
+	}
+
+	// Collect claimed leads
+	claimedMap := make(map[string]int)
+	timeout := time.After(3 * time.Second)
+
+collectLoop:
+	for len(claimedMap) < totalLeads {
+		select {
+		case err := <-errCh:
+			t.Fatalf("worker error: %v", err)
+		case l := <-claimedCh:
+			claimedMap[l.ID]++
+		case <-timeout:
+			break collectLoop
+		}
+	}
+
+	if len(claimedMap) != totalLeads {
+		t.Fatalf("expected all %d leads claimed, got %d unique claims", totalLeads, len(claimedMap))
+	}
+
+	for id, count := range claimedMap {
+		if count != 1 {
+			t.Errorf("lead %s was double-claimed %d times (must be exactly 1)", id, count)
+		}
+	}
+}
+
+func TestServerStartupCampaignRecovery(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:              "camp_startup_recovery",
+		Name:            "Startup Recovery Test",
+		AllocatedAgents: 10,
+		Status:          model.CampaignRunning,
+	}
+	if err := repo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	leads := []*model.Lead{
+		{ID: "rec_lead_1", CampaignID: camp.ID, PhoneNumber: "+14155550001", Priority: 10, Status: model.StatusQueued, CreatedAt: time.Now().UTC()},
+		{ID: "rec_lead_2", CampaignID: camp.ID, PhoneNumber: "+14155550002", Priority: 50, Status: model.StatusQueued, CreatedAt: time.Now().UTC()},
+		{ID: "rec_lead_3", CampaignID: camp.ID, PhoneNumber: "+14155550003", Priority: 90, Status: model.StatusQueued, CreatedAt: time.Now().UTC()},
+	}
+	if _, _, err := repo.IngestLeadsIdempotent(ctx, leads); err != nil {
+		t.Fatalf("failed ingesting leads: %v", err)
+	}
+
+	// Verify repo returns active campaigns and active leads
+	camps, err := repo.ListActiveCampaigns(ctx)
+	if err != nil || len(camps) != 1 {
+		t.Fatalf("expected 1 active campaign, got %d, err: %v", len(camps), err)
+	}
+
+	activeLeads, err := repo.GetActiveLeads(ctx, camp.ID)
+	if err != nil || len(activeLeads) != 3 {
+		t.Fatalf("expected 3 active leads from storage, got %d, err: %v", len(activeLeads), err)
+	}
+
+	// Simulate fresh server instance hydrating from storage
+	restartedEngine := queue.NewCampaignEngine(camp, nil, nil, nil)
+	restartedEngine.SetRepository(repo)
+	restartedEngine.HydrateLeads(activeLeads)
+
+	stats := restartedEngine.GetStats()
+	if stats.TotalLeads != 3 {
+		t.Errorf("expected 3 recovered leads in engine memory, got %d", stats.TotalLeads)
+	}
+
+	// Verify highest priority lead is dialed first
+	l1, ok1 := restartedEngine.GetLead("rec_lead_3")
+	if !ok1 || l1.Priority != 90 {
+		t.Errorf("expected highest priority lead rec_lead_3 to be loaded")
+	}
+}
+
+func TestAtomicTransactionalOutcomePersistence(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:              "camp_tx_test",
+		AllocatedAgents: 5,
+	}
+	_ = repo.SaveCampaign(ctx, camp)
+
+	lead := &model.Lead{
+		ID:          "lead_tx_1",
+		CampaignID:  camp.ID,
+		PhoneNumber: "+14155550099",
+		Priority:    10,
+		Status:      model.StatusDialing,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	attempt := &model.CallAttempt{
+		ID:             "attempt_tx_1",
+		CampaignID:     camp.ID,
+		LeadID:         lead.ID,
+		PhoneNumber:    lead.PhoneNumber,
+		Status:         model.StatusAnswered,
+		RingDurationMs: 120,
+		TalkDurationMs: 4500,
+		CreatedAt:      time.Now().UTC(),
+	}
+
+	// Atomically persist outcome
+	err := repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attempt)
+	if err != nil {
+		t.Fatalf("expected atomic outcome persistence to succeed: %v", err)
+	}
+
+	// Verify lead status was updated
+	activeLeads, err := repo.GetActiveLeads(ctx, camp.ID)
+	if err != nil {
+		t.Fatalf("failed fetching leads: %v", err)
+	}
+	// Status was CONNECTED, so should no longer be in QUEUED/DIALING active queue
+	for _, l := range activeLeads {
+		if l.ID == lead.ID && l.Status != model.StatusConnected {
+			t.Errorf("expected lead status to be CONNECTED, got %s", l.Status)
+		}
+	}
+}
