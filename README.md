@@ -76,6 +76,7 @@
 | :--- | :--- | :--- |
 | `POST` | `/v1/campaigns` | Creates a new outbound campaign |
 | `POST` | `/v1/campaigns/{id}/leads` | Ingests batch leads with priority weighting |
+| `GET` | `/v1/campaigns/{id}/leads/{lead_id}` | Retrieves individual lead status & attempt history |
 | `POST` | `/v1/campaigns/{id}/start` | Activates predictive background dialing loop |
 | `GET` | `/v1/campaigns/{id}/stats` | Live pacing stats (multiplier, answer rate, drop rate) |
 | `POST` | `/v1/dnc` | Bulk inserts phone numbers into DNC Bloom filter |
