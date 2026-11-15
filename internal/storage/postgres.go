@@ -38,6 +38,11 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
 
+// Pool exposes the underlying connection pool for health checks and testing
+func (r *PostgresRepository) Pool() *pgxpool.Pool {
+	return r.pool
+}
+
 func NewPostgresRepositoryFromURL(ctx context.Context, databaseURL string) (*PostgresRepository, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {

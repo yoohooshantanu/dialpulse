@@ -1036,14 +1036,18 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 	}
 	_, _, _ = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{crashedLead})
 
-	// Manually simulate expired lock
+	// Manually simulate expired lock (> 2 min ago) for worker crash
 	_, err = pgRepo.ClaimPendingLeads(ctx, campCrash.ID, 1, "crashed-worker-old")
 	if err != nil {
 		t.Fatalf("failed initial claim for crash simulation: %v", err)
 	}
+	_, err = pgRepo.Pool().Exec(ctx, "UPDATE leads SET locked_at = NOW() - INTERVAL '5 minutes' WHERE id = $1", crashedLeadID)
+	if err != nil {
+		t.Fatalf("failed backdating lock for crash simulation: %v", err)
+	}
 
-	// Reclaim expired lease with 1ms TTL to simulate recovery of crashed worker
-	reclaimedCount, err := pgRepo.ReclaimExpiredLeases(ctx, campCrash.ID, 1*time.Millisecond)
+	// Reclaim expired lease with standard 2m TTL
+	reclaimedCount, err := pgRepo.ReclaimExpiredLeases(ctx, campCrash.ID, 2*time.Minute)
 	if err != nil {
 		t.Fatalf("failed reclaiming expired leases: %v", err)
 	}
