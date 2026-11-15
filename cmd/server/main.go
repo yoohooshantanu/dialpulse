@@ -127,11 +127,21 @@ func main() {
 				http.Error(w, `{"error":"invalid JSON leads array"}`, http.StatusBadRequest)
 				return
 			}
-			count := engine.IngestLeads(leads)
+			count, duplicates := engine.IngestLeads(leads)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"campaign_id": campaignID,
 				"ingested":    count,
+				"duplicates":  duplicates,
+			})
+
+		case "dlq":
+			dlqLeads := engine.GetDLQ()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"campaign_id": campaignID,
+				"dlq_count":   len(dlqLeads),
+				"leads":       dlqLeads,
 			})
 
 		case "start":

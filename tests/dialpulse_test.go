@@ -128,7 +128,7 @@ func TestCampaignPriorityDispatching(t *testing.T) {
 		{ID: "lead_med", PhoneNumber: "2125550003", Priority: 50},
 	}
 
-	ingested := engine.IngestLeads(leads)
+	ingested, _ := engine.IngestLeads(leads)
 	if ingested != 3 {
 		t.Fatalf("expected 3 leads ingested, got %d", ingested)
 	}
@@ -232,6 +232,118 @@ func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
 	engine.Stop()
 }
 
+func TestIdempotentLeadIngestionDeduplication(t *testing.T) {
+	camp := &model.Campaign{
+		ID:              "camp_idempotent_test",
+		AllocatedAgents: 5,
+	}
+	engine := queue.NewCampaignEngine(camp, nil, nil, nil)
+
+	leads := []*model.Lead{
+		{PhoneNumber: "+1 (212) 555-0100", Priority: 10},
+		{PhoneNumber: "12125550100", Priority: 20}, // Duplicate normalized number!
+		{PhoneNumber: "2125550100", Priority: 30},  // Another duplicate!
+		{PhoneNumber: "4155550200", Priority: 40},  // Distinct number
+	}
+
+	accepted, duplicates := engine.IngestLeads(leads)
+	if accepted != 2 {
+		t.Errorf("expected 2 unique accepted leads, got %d", accepted)
+	}
+	if duplicates != 2 {
+		t.Errorf("expected 2 duplicates skipped, got %d", duplicates)
+	}
+
+	stats := engine.GetStats()
+	if stats.TotalLeads != 2 {
+		t.Errorf("expected total leads 2, got %d", stats.TotalLeads)
+	}
+}
+
+func TestDeadLetterQueueRouting(t *testing.T) {
+	camp := &model.Campaign{
+		ID:              "camp_dlq_test",
+		AllocatedAgents: 2,
+	}
+
+	dncFilter := dnc.NewBloomFilter(100, 0.01)
+	dncFilter.Add("2125550099") // Prohibited number
+
+	// Dialer that always returns Busy
+	dialer := &queue.MockTelephonyDialer{
+		BusyRate: 1.0,
+	}
+
+	engine := queue.NewCampaignEngine(camp, dncFilter, nil, dialer)
+
+	leads := []*model.Lead{
+		{ID: "lead_dnc_fail", PhoneNumber: "2125550099", Priority: 10, MaxAttempts: 1},
+		{ID: "lead_exhaust_fail", PhoneNumber: "2125550088", Priority: 20, MaxAttempts: 1},
+	}
+	engine.IngestLeads(leads)
+
+	engine.Start()
+	time.Sleep(150 * time.Millisecond)
+
+	dlq := engine.GetDLQ()
+	if len(dlq) != 2 {
+		t.Fatalf("expected 2 leads routed to DLQ, got %d", len(dlq))
+	}
+
+	for _, l := range dlq {
+		if l.Status != model.StatusDLQ {
+			t.Errorf("expected status DEAD_LETTER_QUEUE, got %s", l.Status)
+		}
+		if l.FailureReason == "" {
+			t.Errorf("expected failure reason populated on DLQ lead")
+		}
+	}
+
+	engine.Stop()
+}
+
+func TestMultiCampaignConcurrencyIsolation(t *testing.T) {
+	numCampaigns := 5
+	engines := make([]*queue.CampaignEngine, numCampaigns)
+
+	for i := 0; i < numCampaigns; i++ {
+		camp := &model.Campaign{
+			ID:              "camp_concurrent_" + string(rune('A'+i)),
+			AllocatedAgents: 3,
+		}
+		engine := queue.NewCampaignEngine(camp, nil, nil, &queue.MockTelephonyDialer{
+			HumanAnswerRate: 0.8,
+		})
+
+		leads := []*model.Lead{
+			{PhoneNumber: "212555100" + string(rune('0'+i)), Priority: 50},
+			{PhoneNumber: "212555200" + string(rune('0'+i)), Priority: 40},
+		}
+		engine.IngestLeads(leads)
+		engines[i] = engine
+	}
+
+	// Start all campaigns simultaneously
+	for _, e := range engines {
+		e.Start()
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify each campaign maintains independent stats
+	for i, e := range engines {
+		stats := e.GetStats()
+		if stats.TotalLeads != 2 {
+			t.Errorf("campaign %d expected 2 total leads, got %d", i, stats.TotalLeads)
+		}
+		if stats.DialedCalls == 0 {
+			t.Errorf("campaign %d expected dials to occur independently", i)
+		}
+		e.Stop()
+	}
+}
+
+
 func TestBusyCallRetryBackoff(t *testing.T) {
 	camp := &model.Campaign{
 		ID:              "camp_retry_test",
@@ -278,3 +390,5 @@ func TestBusyCallRetryBackoff(t *testing.T) {
 
 	engine.Stop()
 }
+
+

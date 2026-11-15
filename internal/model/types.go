@@ -28,6 +28,7 @@ const (
 	StatusAbandoned CallStatus = "ABANDONED"
 	StatusCompleted CallStatus = "COMPLETED"
 	StatusFailed    CallStatus = "FAILED"
+	StatusDLQ       CallStatus = "DEAD_LETTER_QUEUE"
 )
 
 type CampaignStatus string
@@ -56,6 +57,7 @@ type Lead struct {
 	Status        CallStatus `json:"status"`
 	Attempts      int        `json:"attempts"`
 	MaxAttempts   int        `json:"max_attempts"`
+	FailureReason string     `json:"failure_reason,omitempty"`
 	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
 	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`

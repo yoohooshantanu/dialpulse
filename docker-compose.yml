@@ -1,0 +1,58 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dialpulse-postgres
+    environment:
+      POSTGRES_USER: dialpulse_user
+      POSTGRES_PASSWORD: dialpulse_password
+      POSTGRES_DB: dialpulse_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dialpulse_user -d dialpulse_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dialpulse-net
+
+  dialpulse:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dialpulse-engine
+    ports:
+      - "8086:8086"
+    environment:
+      - PORT=8086
+      - DATABASE_URL=postgres://dialpulse_user:dialpulse_password@postgres:5432/dialpulse_db?sslmode=disable
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dialpulse-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: dialpulse-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    networks:
+      - dialpulse-net
+    depends_on:
+      - dialpulse
+
+networks:
+  dialpulse-net:
+    driver: bridge
+
+volumes:
+  postgres_data:

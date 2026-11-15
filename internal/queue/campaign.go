@@ -57,7 +57,9 @@ type CampaignEngine struct {
 	tzGovernor   *timezone.TimezoneGovernor
 	dialer       TelephonyDialer
 	leads        map[string]*model.Lead
+	phoneIndex   map[string]string // Campaign-level phone deduplication for idempotency
 	pendingQueue []*model.Lead
+	dlq          []*model.Lead // Dead-Letter Queue for exhausted/unrecoverable leads
 	activeCalls  int32
 	idleAgents   int32
 	stopCh       chan struct{}
@@ -91,7 +93,9 @@ func NewCampaignEngine(
 		tzGovernor:   tzGovernor,
 		dialer:       dialer,
 		leads:        make(map[string]*model.Lead),
+		phoneIndex:   make(map[string]string),
 		pendingQueue: make([]*model.Lead, 0),
+		dlq:          make([]*model.Lead, 0),
 		idleAgents:   int32(campaign.AllocatedAgents),
 		stopCh:       make(chan struct{}),
 		ctx:          ctx,
@@ -101,13 +105,25 @@ func NewCampaignEngine(
 	return engine
 }
 
-// IngestLeads inserts new prospective contacts into the priority queue
-func (e *CampaignEngine) IngestLeads(leads []*model.Lead) int {
+// IngestLeads inserts new prospective contacts idempotently, skipping duplicate phone numbers
+func (e *CampaignEngine) IngestLeads(leads []*model.Lead) (int, int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	accepted := 0
+	duplicates := 0
 	for _, l := range leads {
+		normPhone := dnc.NormalizeNumber(l.PhoneNumber)
+		if normPhone == "" {
+			continue
+		}
+
+		// Idempotency constraint: avoid duplicate active entries for the same phone within campaign
+		if _, exists := e.phoneIndex[normPhone]; exists {
+			duplicates++
+			continue
+		}
+
 		if l.ID == "" {
 			l.ID = "lead_" + uuid.NewString()[:8]
 		}
@@ -120,6 +136,7 @@ func (e *CampaignEngine) IngestLeads(leads []*model.Lead) int {
 			l.CreatedAt = time.Now().UTC()
 		}
 
+		e.phoneIndex[normPhone] = l.ID
 		e.leads[l.ID] = l
 		e.pendingQueue = append(e.pendingQueue, l)
 		accepted++
@@ -131,8 +148,12 @@ func (e *CampaignEngine) IngestLeads(leads []*model.Lead) int {
 	})
 
 	metrics.DefaultMetrics.AddLeads(accepted)
-	logger.L.Info("leads_ingested", "campaign_id", e.campaign.ID, "count", accepted)
-	return accepted
+	logger.L.Info("leads_ingested_idempotent",
+		"campaign_id", e.campaign.ID,
+		"accepted", accepted,
+		"duplicates_skipped", duplicates,
+	)
+	return accepted, duplicates
 }
 
 // Start begins the predictive dispatch ticker loop
@@ -205,10 +226,12 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	// 1. DNC Screening
 	if e.dncFilter != nil && e.dncFilter.Contains(lead.PhoneNumber) {
 		e.mu.Lock()
-		lead.Status = model.StatusFailed
+		lead.Status = model.StatusDLQ
+		lead.FailureReason = "DNC_PROHIBITED"
+		e.dlq = append(e.dlq, lead)
 		e.mu.Unlock()
 		metrics.DefaultMetrics.IncDNCHit()
-		logger.L.Warn("dial_blocked_dnc", "lead_id", lead.ID, "phone", lead.PhoneNumber)
+		logger.L.Warn("dial_routed_to_dlq_dnc", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 		return
 	}
 
@@ -244,22 +267,36 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	status, _, err := e.dialer.Dial(ctx, lead)
 	if err != nil {
 		e.mu.Lock()
-		lead.Status = model.StatusFailed
+		lead.Status = model.StatusDLQ
+		lead.FailureReason = "CARRIER_TRUNK_ERROR: " + err.Error()
+		e.dlq = append(e.dlq, lead)
 		e.mu.Unlock()
 		e.pacer.RecordOutcome(model.StatusFailed)
 		return
 	}
 
 	// 3. Retry with exponential backoff on Busy or No Answer if attempts remain
-	if (status == model.StatusBusy || status == model.StatusNoAnswer) && lead.Attempts < lead.MaxAttempts {
-		retryTime := time.Now().UTC().Add(15 * time.Minute)
+	if status == model.StatusBusy || status == model.StatusNoAnswer {
+		if lead.Attempts < lead.MaxAttempts {
+			retryTime := time.Now().UTC().Add(15 * time.Minute)
+			e.mu.Lock()
+			lead.NextAttemptAt = &retryTime
+			lead.Status = model.StatusQueued
+			e.pendingQueue = append(e.pendingQueue, lead)
+			e.mu.Unlock()
+			e.pacer.RecordOutcome(status)
+			logger.L.Info("lead_retry_scheduled", "lead_id", lead.ID, "attempt", lead.Attempts, "retry_at", retryTime)
+			return
+		}
+
+		// Attempts exhausted: route to Dead-Letter Queue
 		e.mu.Lock()
-		lead.NextAttemptAt = &retryTime
-		lead.Status = model.StatusQueued
-		e.pendingQueue = append(e.pendingQueue, lead)
+		lead.Status = model.StatusDLQ
+		lead.FailureReason = "EXHAUSTED_MAX_ATTEMPTS"
+		e.dlq = append(e.dlq, lead)
 		e.mu.Unlock()
 		e.pacer.RecordOutcome(status)
-		logger.L.Info("lead_retry_scheduled", "lead_id", lead.ID, "attempt", lead.Attempts, "retry_at", retryTime)
+		logger.L.Warn("lead_routed_to_dlq_exhausted", "lead_id", lead.ID, "attempts", lead.Attempts)
 		return
 	}
 
@@ -320,6 +357,17 @@ func (e *CampaignEngine) GetLead(leadID string) (model.Lead, bool) {
 		return model.Lead{}, false
 	}
 	return *lead, true
+}
+
+// GetDLQ returns all leads currently routed to the Dead-Letter Queue
+func (e *CampaignEngine) GetDLQ() []model.Lead {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]model.Lead, len(e.dlq))
+	for i, l := range e.dlq {
+		out[i] = *l
+	}
+	return out
 }
 
 // Stop gracefully terminates campaign execution and drains active workers
