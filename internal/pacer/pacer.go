@@ -23,6 +23,9 @@ type PredictivePacer struct {
 }
 
 func NewPredictivePacer(campaign *model.Campaign) *PredictivePacer {
+	if campaign.AllocatedAgents <= 0 {
+		campaign.AllocatedAgents = 10
+	}
 	if campaign.TargetAbandonRate <= 0 {
 		campaign.TargetAbandonRate = 0.025 // 2.5% FTC legal limit
 	}
@@ -75,7 +78,12 @@ func (p *PredictivePacer) CalculateDialsNeeded(idleAgents, activeCalls int) int 
 
 	p.activeCalls = activeCalls
 
-	if idleAgents <= 0 && activeCalls >= p.cfg.AllocatedAgents {
+	allocatedAgents := p.cfg.AllocatedAgents
+	if allocatedAgents <= 0 {
+		allocatedAgents = 1
+	}
+
+	if idleAgents <= 0 && activeCalls >= allocatedAgents {
 		// No idle capacity
 		return 0
 	}
@@ -99,8 +107,11 @@ func (p *PredictivePacer) CalculateDialsNeeded(idleAgents, activeCalls int) int 
 
 	// 3. Estimate agents expected to become free during the ring window:
 	// Based on Little's Law / Erlang queue dynamics:
-	// Expected Freeing Soon = ActiveCalls * (RingDuration / AHT)
-	freeingSoon := float64(activeCalls) * (p.cfg.AverageRingSec / p.cfg.AverageHandleSec)
+	avgHandle := p.cfg.AverageHandleSec
+	if avgHandle <= 0 {
+		avgHandle = 90.0
+	}
+	freeingSoon := float64(activeCalls) * (p.cfg.AverageRingSec / avgHandle)
 	effectiveCapacity := float64(idleAgents) + freeingSoon
 
 	// 4. Compute baseline multiplier
@@ -108,18 +119,22 @@ func (p *PredictivePacer) CalculateDialsNeeded(idleAgents, activeCalls int) int 
 
 	// 5. Apply Legal Drop-Rate Governor (Brake Factor)
 	// If abandonment is near or exceeds target, aggressively throttle multiplier
-	if abandonRate >= p.cfg.TargetAbandonRate*0.9 {
+	targetAbandon := p.cfg.TargetAbandonRate
+	if targetAbandon <= 0 {
+		targetAbandon = 0.025
+	}
+	if abandonRate >= targetAbandon*0.9 {
 		// Approaching ceiling: throttle multiplier by penalty ratio
-		brake := 1.0 - math.Min(1.0, (abandonRate-p.cfg.TargetAbandonRate*0.9)/(p.cfg.TargetAbandonRate*0.3))
+		brake := 1.0 - math.Min(1.0, (abandonRate-targetAbandon*0.9)/(targetAbandon*0.3))
 		multiplier *= math.Max(0.2, brake)
 	}
-	if abandonRate >= p.cfg.TargetAbandonRate {
+	if abandonRate >= targetAbandon {
 		// Hard safety cap: fall back to progressive mode (1 dial per idle agent)
 		multiplier = float64(idleAgents)
 	}
 
 	// Enforce maximum multiplier ceiling
-	maxAllowedDials := float64(p.cfg.AllocatedAgents) * p.cfg.MaxDialMultiplier
+	maxAllowedDials := float64(allocatedAgents) * p.cfg.MaxDialMultiplier
 	dials := int(math.Floor(math.Min(multiplier, maxAllowedDials)))
 
 	if dials < 0 {

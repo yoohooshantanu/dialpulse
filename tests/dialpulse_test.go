@@ -176,3 +176,58 @@ func TestCampaignExecutionLifecycle(t *testing.T) {
 		t.Errorf("expected some calls to be dialed during campaign run")
 	}
 }
+
+func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
+	gov := timezone.NewTimezoneGovernor()
+
+	// 1. Verify NextPermissibleCallTime calculation
+	nyPhone := "2125551234"
+	loc, _ := time.LoadLocation("America/New_York")
+	if loc == nil {
+		loc = time.FixedZone("EST", -5*3600)
+	}
+
+	// At 11:30 PM, next permissible should be tomorrow 8:00 AM
+	nightTime := time.Date(2026, 11, 15, 23, 30, 0, 0, loc)
+	nextCallTime := gov.NextPermissibleCallTime(nyPhone, nightTime)
+	expectedTarget := time.Date(2026, 11, 16, 8, 0, 0, 0, loc).UTC()
+
+	if !nextCallTime.Equal(expectedTarget) {
+		t.Errorf("expected next permissible time %v, got %v", expectedTarget, nextCallTime)
+	}
+
+	// 2. Verify engine holdoff and GetLead
+	camp := &model.Campaign{
+		ID:              "camp_holdoff_test",
+		AllocatedAgents: 5,
+	}
+	engine := queue.NewCampaignEngine(camp, nil, gov, &queue.MockTelephonyDialer{
+		HumanAnswerRate: 0.5,
+	})
+
+	lead := &model.Lead{
+		ID:          "lead_curfew_hold",
+		PhoneNumber: nyPhone,
+		Priority:    100,
+	}
+	engine.IngestLeads([]*model.Lead{lead})
+
+	// Set lead NextAttemptAt 1 hour into future
+	future := time.Now().UTC().Add(1 * time.Hour)
+	lead.NextAttemptAt = &future
+
+	engine.Start()
+	time.Sleep(120 * time.Millisecond) // Let ticker fire multiple times
+
+	// The lead must NOT have been dialed because NextAttemptAt is in the future
+	retrieved, ok := engine.GetLead("lead_curfew_hold")
+	if !ok {
+		t.Fatalf("expected to find lead by ID")
+	}
+	if retrieved.Status == model.StatusDialing || retrieved.Status == model.StatusConnected {
+		t.Errorf("expected lead to remain held off, got status %s", retrieved.Status)
+	}
+
+	// 3. Graceful termination drains workers cleanly
+	engine.Stop()
+}

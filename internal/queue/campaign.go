@@ -63,6 +63,9 @@ type CampaignEngine struct {
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	isClosed     bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 }
 
 func NewCampaignEngine(
@@ -79,6 +82,8 @@ func NewCampaignEngine(
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	engine := &CampaignEngine{
 		campaign:     campaign,
 		pacer:        pacer.NewPredictivePacer(campaign),
@@ -89,6 +94,8 @@ func NewCampaignEngine(
 		pendingQueue: make([]*model.Lead, 0),
 		idleAgents:   int32(campaign.AllocatedAgents),
 		stopCh:       make(chan struct{}),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 
 	return engine
@@ -165,23 +172,33 @@ func (e *CampaignEngine) tick() {
 		return
 	}
 
-	// Pull up to dialsNeeded leads from sorted queue
-	if dialsNeeded > len(e.pendingQueue) {
-		dialsNeeded = len(e.pendingQueue)
+	// Filter out leads currently holding off due to timezone curfew
+	now := time.Now().UTC()
+	var eligible []*model.Lead
+	var deferred []*model.Lead
+
+	for _, lead := range e.pendingQueue {
+		if lead.NextAttemptAt != nil && now.Before(*lead.NextAttemptAt) {
+			deferred = append(deferred, lead)
+		} else if len(eligible) < dialsNeeded {
+			eligible = append(eligible, lead)
+		} else {
+			deferred = append(deferred, lead)
+		}
 	}
 
-	batch := make([]*model.Lead, dialsNeeded)
-	copy(batch, e.pendingQueue[:dialsNeeded])
-	e.pendingQueue = e.pendingQueue[dialsNeeded:]
+	e.pendingQueue = deferred
 	e.mu.Unlock()
 
 	// Dispatch batch concurrently
-	for _, lead := range batch {
+	for _, lead := range eligible {
+		e.wg.Add(1)
 		go e.dispatchLead(lead)
 	}
 }
 
 func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
+	defer e.wg.Done()
 	metrics.DefaultMetrics.IncActiveDialer()
 	defer metrics.DefaultMetrics.DecActiveDialer()
 
@@ -198,8 +215,10 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		if err := e.tzGovernor.CanCall(lead.PhoneNumber); err != nil {
 			metrics.DefaultMetrics.IncTimezoneBlock()
 			logger.L.Debug("dial_blocked_curfew", "lead_id", lead.ID, "phone", lead.PhoneNumber)
-			// Return to queue for next valid window
+			nextPermissible := e.tzGovernor.NextPermissibleCallTime(lead.PhoneNumber)
+			// Return to queue for next valid window with backoff hold
 			e.mu.Lock()
+			lead.NextAttemptAt = &nextPermissible
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
 			return
@@ -215,7 +234,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	lead.LastAttemptAt = &now
 	lead.Attempts++
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
 
 	status, _, err := e.dialer.Dial(ctx, lead)
@@ -237,7 +256,10 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			logger.L.Info("call_connected", "lead_id", lead.ID, "campaign_id", e.campaign.ID)
 
 			// Simulate AI call handling (30ms - 60ms)
-			time.Sleep(time.Duration(30+rand.Intn(30)) * time.Millisecond)
+			select {
+			case <-time.After(time.Duration(30+rand.Intn(30)) * time.Millisecond):
+			case <-e.ctx.Done():
+			}
 			atomic.AddInt32(&e.idleAgents, 1)
 		} else {
 			// No agent was available when customer answered -> Abandoned Call!
@@ -264,14 +286,24 @@ func (e *CampaignEngine) GetStats() *model.CampaignStats {
 	return stats
 }
 
-// Stop gracefully terminates campaign execution
+// GetLead retrieves an individual lead's state
+func (e *CampaignEngine) GetLead(leadID string) (*model.Lead, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	lead, ok := e.leads[leadID]
+	return lead, ok
+}
+
+// Stop gracefully terminates campaign execution and drains active workers
 func (e *CampaignEngine) Stop() {
 	e.stopOnce.Do(func() {
 		e.mu.Lock()
 		e.campaign.Status = model.CampaignPaused
 		e.isClosed = true
 		e.mu.Unlock()
+		e.cancel()
 		close(e.stopCh)
+		e.wg.Wait()
 		logger.L.Info("campaign_stopped", "campaign_id", e.campaign.ID)
 	})
 }

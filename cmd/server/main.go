@@ -106,6 +106,18 @@ func main() {
 
 		switch action {
 		case "leads":
+			if r.Method == http.MethodGet && len(parts) >= 5 {
+				leadID := parts[4]
+				lead, ok := engine.GetLead(leadID)
+				if !ok {
+					http.Error(w, `{"error":"lead not found"}`, http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(lead)
+				return
+			}
+
 			if r.Method != http.MethodPost {
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 				return

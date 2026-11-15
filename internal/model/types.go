@@ -57,6 +57,7 @@ type Lead struct {
 	Attempts      int        `json:"attempts"`
 	MaxAttempts   int        `json:"max_attempts"`
 	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 }
 

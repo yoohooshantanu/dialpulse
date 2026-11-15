@@ -105,3 +105,33 @@ func (g *TimezoneGovernor) GetRecipientTime(phone string) time.Time {
 	}
 	return time.Now().In(loc)
 }
+
+// NextPermissibleCallTime computes the exact timestamp when dialing becomes legally permissible (08:00 AM local)
+func (g *TimezoneGovernor) NextPermissibleCallTime(phone string, now ...time.Time) time.Time {
+	currentTime := time.Now()
+	if len(now) > 0 && !now[0].IsZero() {
+		currentTime = now[0]
+	}
+
+	areaCode := ExtractAreaCode(phone)
+	loc, ok := g.areaCodeZones[areaCode]
+	if !ok {
+		loc = g.defaultLoc
+	}
+
+	localTime := currentTime.In(loc)
+	hour := localTime.Hour()
+
+	if hour < 8 {
+		// Permissible today at 08:00 AM local
+		target := time.Date(localTime.Year(), localTime.Month(), localTime.Day(), 8, 0, 0, 0, loc)
+		return target.UTC()
+	} else if hour >= 21 {
+		// Permissible tomorrow at 08:00 AM local
+		tomorrow := localTime.AddDate(0, 0, 1)
+		target := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 8, 0, 0, 0, loc)
+		return target.UTC()
+	}
+
+	return currentTime.UTC()
+}
