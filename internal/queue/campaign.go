@@ -66,6 +66,7 @@ type CampaignEngine struct {
 	activeCalls   int32         // Currently connected or in-conversation calls
 	inFlightDials int32         // Outstanding dialing/ringing outbound attempts
 	idleAgents    int32
+	started       bool
 	stopCh        chan struct{}
 	stopOnce      sync.Once
 	isClosed      bool
@@ -217,22 +218,40 @@ func (e *CampaignEngine) IngestLeads(ctx context.Context, leads []*model.Lead) (
 }
 
 // Start begins the predictive dispatch ticker loop with strict concurrency locking
-func (e *CampaignEngine) Start() {
+func (e *CampaignEngine) Start() error {
 	e.mu.Lock()
-	if e.isClosed || e.campaign.Status == model.CampaignRunning {
+	if e.isClosed {
 		e.mu.Unlock()
-		return
+		return fmt.Errorf("engine is closed")
 	}
+	if e.started {
+		e.mu.Unlock()
+		return nil
+	}
+	e.started = true
 	e.campaign.Status = model.CampaignRunning
 	repo := e.repo
 	campaignID := e.campaign.ID
 	e.mu.Unlock()
 
 	if repo != nil {
-		_ = repo.UpdateCampaignStatus(context.Background(), campaignID, model.CampaignRunning)
+		if err := repo.UpdateCampaignStatus(context.Background(), campaignID, model.CampaignRunning); err != nil {
+			e.mu.Lock()
+			e.started = false
+			e.mu.Unlock()
+			return fmt.Errorf("failed updating campaign status in repository: %w", err)
+		}
 	}
 
 	go e.dispatchLoop()
+	return nil
+}
+
+// IsRunning reports whether the engine's background dispatch loop is actively running
+func (e *CampaignEngine) IsRunning() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.started && !e.isClosed
 }
 
 func (e *CampaignEngine) dispatchLoop() {
@@ -394,7 +413,20 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	defer metrics.DefaultMetrics.DecActiveDialer()
 
 	// 1. DNC Screening
+	isDNC := false
 	if e.dncFilter != nil && e.dncFilter.Contains(lead.PhoneNumber) {
+		isDNC = true
+	} else if e.repo != nil {
+		prohibited, err := e.repo.IsDNCProhibited(context.Background(), lead.PhoneNumber)
+		if err == nil && prohibited {
+			isDNC = true
+			if e.dncFilter != nil {
+				e.dncFilter.Add(lead.PhoneNumber)
+			}
+		}
+	}
+
+	if isDNC {
 		e.mu.Lock()
 		lead.Status = model.StatusDLQ
 		lead.FailureReason = "DNC_PROHIBITED"
@@ -453,6 +485,15 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	currentAttempts := lead.Attempts
 	e.mu.Unlock()
 
+	// Durable attempt-start persistence: write attempt increment and in-progress record to DB before carrier dial
+	attemptID := uuid.NewString()
+	if e.repo != nil {
+		if err := e.repo.RecordAttemptStart(context.Background(), lead.ID, attemptID, currentAttempts); err != nil {
+			metrics.DefaultMetrics.IncStorageErrors()
+			logger.L.Error("failed_recording_attempt_start", "lead_id", lead.ID, "attempt_id", attemptID, "error", err)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
 
@@ -474,7 +515,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 
 		e.pacer.RecordOutcome(model.StatusFailed)
 		e.persistCallOutcome(context.Background(), lead.ID, finalStatus, attemptErr, nil, &model.CallAttempt{
-			ID:             uuid.NewString(),
+			ID:             attemptID,
 			CampaignID:     e.campaign.ID,
 			LeadID:         lead.ID,
 			PhoneNumber:    lead.PhoneNumber,
@@ -510,7 +551,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			// Record outcome exactly once
 			e.pacer.RecordOutcome(status)
 			e.persistCallOutcome(context.Background(), lead.ID, finalStatus, "", &retryTime, &model.CallAttempt{
-				ID:             uuid.NewString(),
+				ID:             attemptID,
 				CampaignID:     e.campaign.ID,
 				LeadID:         lead.ID,
 				PhoneNumber:    lead.PhoneNumber,
@@ -536,7 +577,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		// Record outcome exactly once
 		e.pacer.RecordOutcome(status)
 		e.persistCallOutcome(context.Background(), lead.ID, finalStatus, attemptErr, nil, &model.CallAttempt{
-			ID:             uuid.NewString(),
+			ID:             attemptID,
 			CampaignID:     e.campaign.ID,
 			LeadID:         lead.ID,
 			PhoneNumber:    lead.PhoneNumber,
@@ -559,7 +600,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 
 		e.pacer.RecordOutcome(status)
 		e.persistCallOutcome(context.Background(), lead.ID, finalStatus, "", nil, &model.CallAttempt{
-			ID:             uuid.NewString(),
+			ID:             attemptID,
 			CampaignID:     e.campaign.ID,
 			LeadID:         lead.ID,
 			PhoneNumber:    lead.PhoneNumber,
@@ -594,7 +635,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			atomic.AddInt32(&e.idleAgents, 1)
 
 			e.persistCallOutcome(context.Background(), lead.ID, finalStatus, "", nil, &model.CallAttempt{
-				ID:             uuid.NewString(),
+				ID:             attemptID,
 				CampaignID:     e.campaign.ID,
 				LeadID:         lead.ID,
 				PhoneNumber:    lead.PhoneNumber,
@@ -620,7 +661,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			logger.L.Warn("call_abandoned", "lead_id", lead.ID, "campaign_id", e.campaign.ID)
 
 			e.persistCallOutcome(context.Background(), lead.ID, finalStatus, attemptErr, nil, &model.CallAttempt{
-				ID:             uuid.NewString(),
+				ID:             attemptID,
 				CampaignID:     e.campaign.ID,
 				LeadID:         lead.ID,
 				PhoneNumber:    lead.PhoneNumber,
@@ -641,7 +682,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	e.mu.Unlock()
 	e.pacer.RecordOutcome(status)
 	e.persistCallOutcome(context.Background(), lead.ID, status, "", nil, &model.CallAttempt{
-		ID:             uuid.NewString(),
+		ID:             attemptID,
 		CampaignID:     e.campaign.ID,
 		LeadID:         lead.ID,
 		PhoneNumber:    lead.PhoneNumber,
@@ -693,6 +734,7 @@ func (e *CampaignEngine) Stop() {
 		e.mu.Lock()
 		e.campaign.Status = model.CampaignPaused
 		e.isClosed = true
+		e.started = false
 		e.mu.Unlock()
 
 		e.cancel()

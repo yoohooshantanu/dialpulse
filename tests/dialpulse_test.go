@@ -3,8 +3,10 @@ package tests
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -174,7 +176,7 @@ func TestCampaignExecutionLifecycle(t *testing.T) {
 	}
 
 	_, _, _ = engine.IngestLeads(context.Background(), leads)
-	engine.Start()
+	_ = engine.Start()
 
 	// Wait for background dispatch ticks
 	time.Sleep(200 * time.Millisecond)
@@ -226,7 +228,7 @@ func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
 	future := time.Now().UTC().Add(1 * time.Hour)
 	lead.NextAttemptAt = &future
 
-	engine.Start()
+	_ = engine.Start()
 	time.Sleep(120 * time.Millisecond) // Let ticker fire multiple times
 
 	// The lead must NOT have been dialed because NextAttemptAt is in the future
@@ -295,7 +297,7 @@ func TestDeadLetterQueueRouting(t *testing.T) {
 	}
 	_, _, _ = engine.IngestLeads(context.Background(), leads)
 
-	engine.Start()
+	_ = engine.Start()
 	time.Sleep(150 * time.Millisecond)
 
 	dlq := engine.GetDLQ()
@@ -338,7 +340,7 @@ func TestMultiCampaignConcurrencyIsolation(t *testing.T) {
 
 	// Start all campaigns simultaneously
 	for _, e := range engines {
-		e.Start()
+		_ = e.Start()
 	}
 
 	time.Sleep(150 * time.Millisecond)
@@ -500,7 +502,7 @@ func TestInFlightDialLimiting(t *testing.T) {
 	}
 	_, _, _ = engine.IngestLeads(context.Background(), leads)
 
-	engine.Start()
+	_ = engine.Start()
 	// Let ticker fire twice (100ms)
 	time.Sleep(120 * time.Millisecond)
 
@@ -532,7 +534,7 @@ func TestPacerSingleOutcomeAccounting(t *testing.T) {
 		{PhoneNumber: "+12125559093", Priority: 80},
 	})
 
-	engine.Start()
+	_ = engine.Start()
 	time.Sleep(150 * time.Millisecond)
 
 	stats := engine.GetStats()
@@ -933,7 +935,7 @@ func TestTickDistributedClaimingIntegration(t *testing.T) {
 	}
 
 	// Start engine: tick() MUST pull from repository via ClaimPendingLeads
-	engine.Start()
+	_ = engine.Start()
 	time.Sleep(150 * time.Millisecond)
 	engine.Stop()
 
@@ -1157,15 +1159,25 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 	}
 
 	// Instantiate two independent running CampaignEngine instances sharing PostgreSQL
-	engine1 := queue.NewCampaignEngine(camp, nil, nil, recordingDialer)
+	camp1 := *camp
+	camp2 := *camp
+	engine1 := queue.NewCampaignEngine(&camp1, nil, nil, recordingDialer)
 	engine1.SetRepository(pgRepo)
 
-	engine2 := queue.NewCampaignEngine(camp, nil, nil, recordingDialer)
+	engine2 := queue.NewCampaignEngine(&camp2, nil, nil, recordingDialer)
 	engine2.SetRepository(pgRepo)
 
 	// Launch both engines simultaneously via Start() -> tick() background dispatch loops
-	engine1.Start()
-	engine2.Start()
+	if err := engine1.Start(); err != nil {
+		t.Fatalf("failed starting engine1: %v", err)
+	}
+	if err := engine2.Start(); err != nil {
+		t.Fatalf("failed starting engine2: %v", err)
+	}
+
+	if !engine1.IsRunning() || !engine2.IsRunning() {
+		t.Fatalf("expected both engines to be actively running")
+	}
 
 	// Wait for background tick loops to process all leads
 	deadline := time.Now().Add(5 * time.Second)
@@ -1193,6 +1205,158 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 		if count > 1 {
 			t.Errorf("lead %s was dialed %d times (expected exactly 1 dial across engines)", leadID, count)
 		}
+	}
+
+	stats1 := engine1.GetStats()
+	stats2 := engine2.GetStats()
+	if stats1.DialedCalls == 0 || stats2.DialedCalls == 0 {
+		t.Errorf("expected both competing engines to actively participate in dispatch: engine1 dialed %d, engine2 dialed %d", stats1.DialedCalls, stats2.DialedCalls)
+	}
+}
+
+func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	dncNumber := fmt.Sprintf("+1800555%04d", rand.Intn(10000))
+	// 1. Instance 1 adds number to PostgreSQL DNC registry
+	if err := pgRepo.AddDNCNumbers(ctx, []string{dncNumber}); err != nil {
+		t.Fatalf("failed adding DNC number to live postgres: %v", err)
+	}
+
+	// 2. Instance 2 directly checks via repository without prior restart or bloom pre-population
+	prohibited, err := pgRepo.IsDNCProhibited(ctx, dncNumber)
+	if err != nil {
+		t.Fatalf("failed querying DNC status: %v", err)
+	}
+	if !prohibited {
+		t.Errorf("expected number %s to be prohibited across instances via live postgres", dncNumber)
+	}
+
+	// 3. Instance 2 engine without bloom filter screening must drop lead to DLQ
+	camp := &model.Campaign{
+		ID:              "camp_dnc_cross_" + uuid.NewString()[:8],
+		AllocatedAgents: 5,
+		Status:          model.CampaignRunning,
+	}
+	_ = pgRepo.SaveCampaign(ctx, camp)
+
+	var dialedCalls int32
+	mockDialer := &callbackDialer{
+		dialFn: func(ctx context.Context, lead *model.Lead) (model.CallStatus, time.Duration, error) {
+			atomic.AddInt32(&dialedCalls, 1)
+			return model.StatusAnswered, 10 * time.Millisecond, nil
+		},
+	}
+
+	engine2 := queue.NewCampaignEngine(camp, nil, nil, mockDialer) // nil bloom filter!
+	engine2.SetRepository(pgRepo)
+
+	lead := &model.Lead{
+		ID:          "lead_dnc_cross",
+		CampaignID:  camp.ID,
+		PhoneNumber: dncNumber,
+		Priority:    100,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	if err != nil {
+		t.Fatalf("failed ingesting lead: %v", err)
+	}
+
+	_ = engine2.Start()
+	time.Sleep(200 * time.Millisecond)
+	engine2.Stop()
+
+	if atomic.LoadInt32(&dialedCalls) > 0 {
+		t.Errorf("expected 0 dials for DNC prohibited number, got %d", dialedCalls)
+	}
+
+	dlqLeads, err := pgRepo.GetDeadLetterQueue(ctx, camp.ID)
+	if err != nil {
+		t.Fatalf("failed fetching DLQ: %v", err)
+	}
+	found := false
+	for _, l := range dlqLeads {
+		if l.ID == lead.ID && l.FailureReason == "DNC_PROHIBITED" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected lead %s to be in DLQ with DNC_PROHIBITED reason, got %v", lead.ID, dlqLeads)
+	}
+}
+
+func TestDurableAttemptStartPersistenceCrashSafety(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:              "camp_crash_safety",
+		AllocatedAgents: 5,
+		Status:          model.CampaignRunning,
+	}
+	_ = repo.SaveCampaign(ctx, camp)
+
+	lead := &model.Lead{
+		ID:          "lead_crash_safety_1",
+		CampaignID:  camp.ID,
+		PhoneNumber: "+14155557777",
+		Priority:    50,
+		Attempts:    0,
+		MaxAttempts: 3,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, err := repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	if err != nil {
+		t.Fatalf("failed ingesting lead: %v", err)
+	}
+
+	// Dial starts: RecordAttemptStart writes attempts=1 and IN_PROGRESS attempt record
+	attemptID := uuid.NewString()
+	err = repo.RecordAttemptStart(ctx, lead.ID, attemptID, 1)
+	if err != nil {
+		t.Fatalf("failed recording attempt start: %v", err)
+	}
+
+	// Verify durability before carrier returns: attempts count must already be 1 in storage
+	activeLeads, err := repo.GetActiveLeads(ctx, camp.ID)
+	if err != nil {
+		t.Fatalf("failed querying active leads: %v", err)
+	}
+	if len(activeLeads) != 1 || activeLeads[0].Attempts != 1 {
+		t.Fatalf("expected attempts=1 durably preserved in storage before dial completion, got %v", activeLeads[0].Attempts)
+	}
+
+	// Now complete normally with RecordCallOutcomeTx
+	outcomeAttempt := &model.CallAttempt{
+		ID:             attemptID,
+		CampaignID:     camp.ID,
+		LeadID:         lead.ID,
+		PhoneNumber:    lead.PhoneNumber,
+		Status:         model.StatusConnected,
+		RingDurationMs: 50,
+		TalkDurationMs: 2000,
+		CreatedAt:      time.Now().UTC(),
+	}
+	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "NORMAL_CLEARING", nil, outcomeAttempt, 1)
+	if err != nil {
+		t.Fatalf("failed recording call outcome tx: %v", err)
 	}
 }
 

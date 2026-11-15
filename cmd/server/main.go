@@ -75,8 +75,11 @@ func (s *ServerState) recoverCampaigns(ctx context.Context) error {
 
 		// Automatically resume execution for campaigns marked RUNNING
 		if camp.Status == model.CampaignRunning {
-			engine.Start()
-			logger.L.Info("campaign_resumed_on_startup", "campaign_id", camp.ID)
+			if err := engine.Start(); err != nil {
+				logger.L.Error("failed_resuming_campaign_on_startup", "campaign_id", camp.ID, "error", err)
+			} else {
+				logger.L.Info("campaign_resumed_on_startup", "campaign_id", camp.ID)
+			}
 		}
 	}
 	return nil
@@ -150,17 +153,17 @@ func main() {
 		repo:      repo,
 	}
 
-	// Recover and hydrate DNC persistent registry into Bloom filter
+	// Recover and hydrate DNC persistent registry into Bloom filter (Fail-closed on DB read failure)
 	if repo != nil {
 		dncNumbers, err := repo.GetDNCNumbers(context.Background())
 		if err != nil {
-			logger.L.Error("failed_loading_dnc_registry_on_startup", "error", err)
-		} else {
-			for _, num := range dncNumbers {
-				state.dncFilter.Add(num)
-			}
-			logger.L.Info("dnc_registry_hydrated_from_database", "count", len(dncNumbers))
+			logger.L.Error("failed_loading_dnc_registry_on_startup_fatal", "error", err)
+			os.Exit(1)
 		}
+		for _, num := range dncNumbers {
+			state.dncFilter.Add(num)
+		}
+		logger.L.Info("dnc_registry_hydrated_from_database", "count", len(dncNumbers))
 	}
 
 	// Recover existing active campaigns and leads from storage on startup
@@ -283,9 +286,10 @@ func main() {
 				http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 				return
 			}
-			engine.Start()
-			if state.repo != nil {
-				_ = state.repo.UpdateCampaignStatus(r.Context(), campaignID, model.CampaignRunning)
+			if err := engine.Start(); err != nil {
+				logger.L.Error("failed_starting_campaign", "campaign_id", campaignID, "error", err)
+				http.Error(w, `{"error":"failed to start campaign"}`, http.StatusInternalServerError)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "running"})

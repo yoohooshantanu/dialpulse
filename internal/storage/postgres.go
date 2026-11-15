@@ -26,10 +26,12 @@ type CampaignRepository interface {
 	RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time) error
 	UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error
 	RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error
+	RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int) error
 	RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int) error
 	GetDeadLetterQueue(ctx context.Context, campaignID string) ([]*model.Lead, error)
 	AddDNCNumbers(ctx context.Context, numbers []string) error
 	GetDNCNumbers(ctx context.Context) ([]string, error)
+	IsDNCProhibited(ctx context.Context, phone string) (bool, error)
 	Close()
 }
 
@@ -473,6 +475,38 @@ func (r *PostgresRepository) RecordCallAttempt(ctx context.Context, attempt *mod
 	return err
 }
 
+// RecordAttemptStart durably persists attempt increment and records an IN_PROGRESS attempt record prior to external carrier dial
+func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed beginning tx for attempt start: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	updateLeadQuery := `
+		UPDATE leads
+		SET attempts = $1,
+		    last_attempt_at = NOW()
+		WHERE id = $2;`
+	if _, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID); err != nil {
+		return fmt.Errorf("failed updating lead attempts in start tx: %w", err)
+	}
+
+	insertAttemptQuery := `
+		INSERT INTO call_attempts (
+			id, campaign_id, lead_id, phone_number, status, created_at
+		) SELECT $1, campaign_id, id, phone_number, 'IN_PROGRESS', NOW()
+		FROM leads WHERE id = $2
+		ON CONFLICT (id) DO UPDATE SET
+			status = EXCLUDED.status,
+			created_at = EXCLUDED.created_at;`
+	if _, err := tx.Exec(ctx, insertAttemptQuery, attemptID, leadID); err != nil {
+		return fmt.Errorf("failed inserting in-progress attempt: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
 // RecordCallOutcomeTx atomically persists lead status and call attempt within a single database transaction with bounded retry
 func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int) error {
 	var lastErr error
@@ -505,7 +539,12 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 					INSERT INTO call_attempts (
 						id, campaign_id, lead_id, phone_number, status,
 						ring_duration_ms, talk_duration_ms, error_message, created_at
-					) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+					ON CONFLICT (id) DO UPDATE SET
+						status = EXCLUDED.status,
+						ring_duration_ms = EXCLUDED.ring_duration_ms,
+						talk_duration_ms = EXCLUDED.talk_duration_ms,
+						error_message = EXCLUDED.error_message;`
 				createdAt := attempt.CreatedAt
 				if createdAt.IsZero() {
 					createdAt = time.Now().UTC()
@@ -622,6 +661,14 @@ func (r *PostgresRepository) GetDNCNumbers(ctx context.Context) ([]string, error
 		result = append(result, num)
 	}
 	return result, nil
+}
+
+// IsDNCProhibited checks directly against the authoritative dnc_numbers PostgreSQL table
+func (r *PostgresRepository) IsDNCProhibited(ctx context.Context, phone string) (bool, error) {
+	var exists bool
+	query := `SELECT EXISTS(SELECT 1 FROM dnc_numbers WHERE phone_number = $1);`
+	err := r.pool.QueryRow(ctx, query, phone).Scan(&exists)
+	return exists, err
 }
 
 // MemoryPostgresRepository provides an in-memory replica with identical relational semantics and idempotency constraints
@@ -843,6 +890,29 @@ func (r *MemoryPostgresRepository) RecordCallAttempt(ctx context.Context, attemp
 	return nil
 }
 
+func (r *MemoryPostgresRepository) RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	lead, exists := r.leads[leadID]
+	if !exists {
+		return fmt.Errorf("lead not found: %s", leadID)
+	}
+	lead.Attempts = attemptNum
+	now := time.Now().UTC()
+	lead.LastAttemptAt = &now
+
+	r.attempts[lead.CampaignID] = append(r.attempts[lead.CampaignID], &model.CallAttempt{
+		ID:          attemptID,
+		CampaignID:  lead.CampaignID,
+		LeadID:      lead.ID,
+		PhoneNumber: lead.PhoneNumber,
+		Status:      "IN_PROGRESS",
+		CreatedAt:   now,
+	})
+	return nil
+}
+
 func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -866,7 +936,17 @@ func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, lead
 	}
 
 	if attempt != nil {
-		r.attempts[attempt.CampaignID] = append(r.attempts[attempt.CampaignID], attempt)
+		updated := false
+		for i, a := range r.attempts[attempt.CampaignID] {
+			if a.ID == attempt.ID {
+				r.attempts[attempt.CampaignID][i] = attempt
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			r.attempts[attempt.CampaignID] = append(r.attempts[attempt.CampaignID], attempt)
+		}
 	}
 
 	return nil
@@ -889,6 +969,12 @@ func (r *MemoryPostgresRepository) GetDNCNumbers(ctx context.Context) ([]string,
 		res = append(res, n)
 	}
 	return res, nil
+}
+
+func (r *MemoryPostgresRepository) IsDNCProhibited(ctx context.Context, phone string) (bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.dncNumbers[phone], nil
 }
 
 func (r *MemoryPostgresRepository) GetDeadLetterQueue(ctx context.Context, campaignID string) ([]*model.Lead, error) {
