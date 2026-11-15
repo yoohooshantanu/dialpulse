@@ -323,10 +323,11 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 
 // ReclaimExpiredLeases resets DIALING leads with expired leases (> leaseTTL) back to QUEUED for crash recovery
 func (r *PostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error) {
-	if leaseTTL <= 0 {
+	if leaseTTL < 0 {
 		leaseTTL = 2 * time.Minute
 	}
-	ttlSec := int(leaseTTL.Seconds())
+	intervalSec := float64(leaseTTL.Milliseconds()) / 1000.0
+	intervalStr := fmt.Sprintf("%f seconds", intervalSec)
 
 	query := `
 		UPDATE leads
@@ -336,9 +337,9 @@ func (r *PostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignI
 		WHERE campaign_id = $1
 		  AND status = 'DIALING'
 		  AND locked_at IS NOT NULL
-		  AND locked_at < NOW() - ($2 || ' seconds')::interval;`
+		  AND locked_at < NOW() - $2::interval;`
 
-	tag, err := r.pool.Exec(ctx, query, campaignID, ttlSec)
+	tag, err := r.pool.Exec(ctx, query, campaignID, intervalStr)
 	if err != nil {
 		return 0, err
 	}
@@ -679,7 +680,7 @@ func (r *MemoryPostgresRepository) ReclaimExpiredLeases(ctx context.Context, cam
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if leaseTTL <= 0 {
+	if leaseTTL < 0 {
 		leaseTTL = 2 * time.Minute
 	}
 	now := time.Now().UTC()
@@ -687,7 +688,7 @@ func (r *MemoryPostgresRepository) ReclaimExpiredLeases(ctx context.Context, cam
 
 	for _, l := range r.leads {
 		if l.CampaignID == campaignID && l.Status == model.StatusDialing && l.LockedAt != nil {
-			if now.Sub(*l.LockedAt) > leaseTTL {
+			if now.Sub(*l.LockedAt) >= leaseTTL {
 				l.Status = model.StatusQueued
 				l.LockedBy = ""
 				l.LockedAt = nil

@@ -1030,10 +1030,13 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 		t.Fatalf("failed initial claim for crash simulation: %v", err)
 	}
 
-	// Fast-forward locked_at in PostgreSQL to 5 minutes ago
-	_, err = pgRepo.ReclaimExpiredLeases(ctx, camp.ID, 0*time.Second) // Force immediate reclaim with 0 TTL
+	// Reclaim expired lease with 1ms TTL to simulate recovery of crashed worker
+	reclaimedCount, err := pgRepo.ReclaimExpiredLeases(ctx, camp.ID, 1*time.Millisecond)
 	if err != nil {
 		t.Fatalf("failed reclaiming expired leases: %v", err)
+	}
+	if reclaimedCount != 1 {
+		t.Errorf("expected 1 expired lease reclaimed, got %d", reclaimedCount)
 	}
 
 	// Active worker now claims: must successfully pick up the orphaned lead
