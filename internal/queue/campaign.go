@@ -292,7 +292,6 @@ func (e *CampaignEngine) tick() {
 	repo := e.repo
 	workerID := e.workerID
 	campaignID := e.campaign.ID
-	ctx := e.ctx
 	e.mu.Unlock()
 
 	var eligible []*model.Lead
@@ -301,7 +300,9 @@ func (e *CampaignEngine) tick() {
 	// dynamically claim pending leads directly from PostgreSQL via SELECT FOR UPDATE SKIP LOCKED.
 	// This coordinates seamlessly across multiple running server instances with zero collision or double dialing.
 	if repo != nil {
-		claimed, err := repo.ClaimPendingLeads(ctx, campaignID, netDialsNeeded, workerID)
+		claimCtx, claimCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		claimed, err := repo.ClaimPendingLeads(claimCtx, campaignID, netDialsNeeded, workerID)
+		claimCancel()
 		if err != nil {
 			logger.L.Error("failed_claiming_distributed_leads_in_tick", "campaign_id", campaignID, "error", err)
 		} else {

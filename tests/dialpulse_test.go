@@ -1120,7 +1120,8 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 	camp := &model.Campaign{
 		ID:                campID,
 		Name:              "Live Competing Engines Scheduler Test",
-		AllocatedAgents:   10,
+		AllocatedAgents:   2,
+		MaxDialMultiplier: 1.5,
 		TargetAbandonRate: 0.025,
 		Status:            model.CampaignDraft,
 	}
@@ -1128,7 +1129,7 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 		t.Fatalf("failed saving campaign: %v", err)
 	}
 
-	const numLeads = 12
+	const numLeads = 24
 	var leads []*model.Lead
 	for i := 0; i < numLeads; i++ {
 		leads = append(leads, &model.Lead{
@@ -1154,6 +1155,10 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 			dialMu.Lock()
 			dialCounts[lead.ID]++
 			dialMu.Unlock()
+			select {
+			case <-time.After(25 * time.Millisecond):
+			case <-ctx.Done():
+			}
 			return model.StatusAnswered, 10 * time.Millisecond, nil
 		},
 	}
@@ -1191,6 +1196,7 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	time.Sleep(100 * time.Millisecond)
 	engine1.Stop()
 	engine2.Stop()
 
