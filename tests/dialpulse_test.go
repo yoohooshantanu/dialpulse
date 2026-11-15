@@ -898,3 +898,153 @@ func TestAtomicTransactionalOutcomePersistence(t *testing.T) {
 		}
 	}
 }
+
+func TestTickDistributedClaimingIntegration(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:                "camp_tick_claim_test",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+		Status:            model.CampaignDraft,
+	}
+	_ = repo.SaveCampaign(ctx, camp)
+
+	// Ingest leads strictly to repository (NOT hydrating engine memory queue)
+	leads := []*model.Lead{
+		{ID: "tick_lead_1", CampaignID: camp.ID, PhoneNumber: "+14155551111", Priority: 10, Status: model.StatusQueued, CreatedAt: time.Now().UTC()},
+		{ID: "tick_lead_2", CampaignID: camp.ID, PhoneNumber: "+14155552222", Priority: 20, Status: model.StatusQueued, CreatedAt: time.Now().UTC()},
+	}
+	_, _, err := repo.IngestLeadsIdempotent(ctx, leads)
+	if err != nil {
+		t.Fatalf("failed ingesting test leads: %v", err)
+	}
+
+	engine := queue.NewCampaignEngine(camp, nil, nil, nil)
+	engine.SetRepository(repo)
+
+	// Engine starts with 0 leads in pendingQueue
+	statsBefore := engine.GetStats()
+	if statsBefore.TotalLeads != 0 {
+		t.Fatalf("expected 0 in-memory leads before tick, got %d", statsBefore.TotalLeads)
+	}
+
+	// Start engine: tick() MUST pull from repository via ClaimPendingLeads
+	engine.Start()
+	time.Sleep(150 * time.Millisecond)
+	engine.Stop()
+
+	// Verify leads were claimed from repo and dispatched
+	statsAfter := engine.GetStats()
+	if statsAfter.DialedCalls < 2 {
+		t.Errorf("expected at least 2 dialed calls via distributed claim in tick, got %d", statsAfter.DialedCalls)
+	}
+}
+
+func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	campID := "camp_dist_live_" + uuid.NewString()[:8]
+	camp := &model.Campaign{
+		ID:                campID,
+		Name:              "Live Distributed Claim Test",
+		AllocatedAgents:   10,
+		TargetAbandonRate: 0.025,
+		Status:            model.CampaignRunning,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	const numLeads = 20
+	var leads []*model.Lead
+	for i := 0; i < numLeads; i++ {
+		leads = append(leads, &model.Lead{
+			ID:          fmt.Sprintf("live_claim_%02d", i),
+			CampaignID:  camp.ID,
+			PhoneNumber: fmt.Sprintf("+1415555%04d", 2000+i),
+			Priority:    i,
+			Status:      model.StatusQueued,
+			CreatedAt:   time.Now().UTC(),
+		})
+	}
+	insertedIDs, _, err := pgRepo.IngestLeadsIdempotent(ctx, leads)
+	if err != nil || len(insertedIDs) != numLeads {
+		t.Fatalf("failed batch ingesting live leads: %v", err)
+	}
+
+	// 1. Concurrent competing workers against live PostgreSQL: 2 workers claim 10 leads each
+	claimedWorkerA, errA := pgRepo.ClaimPendingLeads(ctx, camp.ID, 10, "worker-node-A")
+	if errA != nil {
+		t.Fatalf("worker A claim failed: %v", errA)
+	}
+	claimedWorkerB, errB := pgRepo.ClaimPendingLeads(ctx, camp.ID, 10, "worker-node-B")
+	if errB != nil {
+		t.Fatalf("worker B claim failed: %v", errB)
+	}
+
+	if len(claimedWorkerA) != 10 || len(claimedWorkerB) != 10 {
+		t.Fatalf("expected 10 leads each, got A=%d, B=%d", len(claimedWorkerA), len(claimedWorkerB))
+	}
+
+	// Verify mutually exclusive claims (zero double-dialing across live PostgreSQL workers)
+	seen := make(map[string]bool)
+	for _, l := range claimedWorkerA {
+		seen[l.ID] = true
+	}
+	for _, l := range claimedWorkerB {
+		if seen[l.ID] {
+			t.Fatalf("lead %s was double-claimed by both workers on live PostgreSQL!", l.ID)
+		}
+	}
+
+	// 2. Expired Lease Recovery: Simulate worker crash during call
+	crashedLeadID := "live_claim_crashed"
+	crashedLead := &model.Lead{
+		ID:          crashedLeadID,
+		CampaignID:  camp.ID,
+		PhoneNumber: "+14155559999",
+		Priority:    100, // Highest priority
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, _ = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{crashedLead})
+
+	// Manually simulate expired lock (> 2 min ago)
+	_, err = pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "crashed-worker-old")
+	if err != nil {
+		t.Fatalf("failed initial claim for crash simulation: %v", err)
+	}
+
+	// Fast-forward locked_at in PostgreSQL to 5 minutes ago
+	_, err = pgRepo.ReclaimExpiredLeases(ctx, camp.ID, 0*time.Second) // Force immediate reclaim with 0 TTL
+	if err != nil {
+		t.Fatalf("failed reclaiming expired leases: %v", err)
+	}
+
+	// Active worker now claims: must successfully pick up the orphaned lead
+	recovered, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "surviving-worker-new")
+	if err != nil {
+		t.Fatalf("failed claiming recovered lead: %v", err)
+	}
+	if len(recovered) != 1 || recovered[0].ID != crashedLeadID {
+		t.Fatalf("expected crashed lead %s to be reclaimed, got %v", crashedLeadID, recovered)
+	}
+	if recovered[0].LockedBy != "surviving-worker-new" {
+		t.Errorf("expected lock updated to surviving-worker-new, got %s", recovered[0].LockedBy)
+	}
+}

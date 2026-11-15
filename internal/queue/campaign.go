@@ -52,6 +52,7 @@ func (m *MockTelephonyDialer) Dial(ctx context.Context, lead *model.Lead) (model
 // CampaignEngine orchestrates lead priority dispatching, predictive pacing, and carrier execution
 type CampaignEngine struct {
 	mu            sync.RWMutex
+	workerID      string
 	campaign      *model.Campaign
 	pacer         *pacer.PredictivePacer
 	dncFilter     *dnc.BloomFilter
@@ -88,8 +89,10 @@ func NewCampaignEngine(
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	workerID := fmt.Sprintf("worker-%s-%s", campaign.ID, uuid.NewString()[:8])
 
 	engine := &CampaignEngine{
+		workerID:     workerID,
 		campaign:     campaign,
 		pacer:        pacer.NewPredictivePacer(campaign),
 		dncFilter:    dncFilter,
@@ -106,6 +109,11 @@ func NewCampaignEngine(
 	}
 
 	return engine
+}
+
+// WorkerID returns the unique instance worker identifier
+func (e *CampaignEngine) WorkerID() string {
+	return e.workerID
 }
 
 // SetRepository connects a persistent repository (PostgreSQL or Memory replica)
@@ -237,7 +245,7 @@ func (e *CampaignEngine) dispatchLoop() {
 
 func (e *CampaignEngine) tick() {
 	e.mu.Lock()
-	if e.isClosed || e.campaign.Status != model.CampaignRunning || len(e.pendingQueue) == 0 {
+	if e.isClosed || e.campaign.Status != model.CampaignRunning {
 		e.mu.Unlock()
 		return
 	}
@@ -256,29 +264,54 @@ func (e *CampaignEngine) tick() {
 		return
 	}
 
-	// Filter out leads currently holding off due to timezone curfew or retry backoff
-	now := time.Now().UTC()
-	var eligible []*model.Lead
-	var deferred []*model.Lead
+	repo := e.repo
+	workerID := e.workerID
+	campaignID := e.campaign.ID
+	ctx := e.ctx
+	e.mu.Unlock()
 
-	for _, lead := range e.pendingQueue {
-		if lead.NextAttemptAt != nil && now.Before(*lead.NextAttemptAt) {
-			deferred = append(deferred, lead)
-		} else if len(eligible) < netDialsNeeded {
-			eligible = append(eligible, lead)
+	var eligible []*model.Lead
+
+	// 1. Authoritative Distributed Path: When a persistent repository is configured,
+	// dynamically claim pending leads directly from PostgreSQL via SELECT FOR UPDATE SKIP LOCKED.
+	// This coordinates seamlessly across multiple running server instances with zero collision or double dialing.
+	if repo != nil {
+		claimed, err := repo.ClaimPendingLeads(ctx, campaignID, netDialsNeeded, workerID)
+		if err != nil {
+			logger.L.Error("failed_claiming_distributed_leads_in_tick", "campaign_id", campaignID, "error", err)
 		} else {
-			deferred = append(deferred, lead)
+			eligible = claimed
 		}
+	} else {
+		// 2. Pure in-memory standalone mode fallback (for isolated mock harness tests)
+		e.mu.Lock()
+		now := time.Now().UTC()
+		var deferred []*model.Lead
+		for _, lead := range e.pendingQueue {
+			if lead.NextAttemptAt != nil && now.Before(*lead.NextAttemptAt) {
+				deferred = append(deferred, lead)
+			} else if len(eligible) < netDialsNeeded {
+				eligible = append(eligible, lead)
+			} else {
+				deferred = append(deferred, lead)
+			}
+		}
+		e.pendingQueue = deferred
+		e.mu.Unlock()
 	}
 
-	e.pendingQueue = deferred
+	if len(eligible) == 0 {
+		return
+	}
 
-	// Reserve dispatch capacity and register workers strictly under e.mu.Lock().
-	// This guarantees no wg.Add(1) can ever occur concurrently with or after e.wg.Wait() in Stop().
+	e.mu.Lock()
+	if e.isClosed {
+		e.mu.Unlock()
+		return
+	}
+
 	for _, lead := range eligible {
-		if e.isClosed {
-			break
-		}
+		e.leads[lead.ID] = lead
 		atomic.AddInt32(&e.inFlightDials, 1)
 		e.wg.Add(1)
 		go e.dispatchLead(lead)
@@ -303,6 +336,7 @@ func (e *CampaignEngine) HydrateLeads(leads []*model.Lead) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	now := time.Now().UTC()
 	for _, l := range leads {
 		normPhone := dnc.NormalizeNumber(l.PhoneNumber)
 		if normPhone == "" {
@@ -313,6 +347,16 @@ func (e *CampaignEngine) HydrateLeads(leads []*model.Lead) {
 		}
 		e.phoneIndex[normPhone] = l.ID
 		e.leads[l.ID] = l
+
+		// If lead was DIALING from a crashed previous instance with expired lease, reclaim it for queue
+		if l.Status == model.StatusDialing {
+			if l.LockedAt == nil || now.Sub(*l.LockedAt) > 2*time.Minute {
+				l.Status = model.StatusQueued
+				l.LockedBy = ""
+				l.LockedAt = nil
+			}
+		}
+
 		if l.Status == model.StatusQueued || l.Status == "" || l.Status == "DRAFT" {
 			e.pendingQueue = append(e.pendingQueue, l)
 		} else if l.Status == model.StatusDLQ {

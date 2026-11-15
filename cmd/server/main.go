@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -40,16 +41,27 @@ type ServerState struct {
 func (s *ServerState) recoverCampaigns(ctx context.Context) error {
 	camps, err := s.repo.ListActiveCampaigns(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed listing active campaigns: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, camp := range camps {
+		// Reclaim any orphaned leases from crashed previous instances
+		if reclaimed, err := s.repo.ReclaimExpiredLeases(ctx, camp.ID, 2*time.Minute); err == nil && reclaimed > 0 {
+			logger.L.Warn("orphaned_dialing_leases_reclaimed", "campaign_id", camp.ID, "count", reclaimed)
+		}
+
 		engine := queue.NewCampaignEngine(camp, s.dncFilter, s.tzGov, nil)
 		engine.SetRepository(s.repo)
+
 		leads, err := s.repo.GetActiveLeads(ctx, camp.ID)
-		if err == nil && len(leads) > 0 {
+		if err != nil {
+			logger.L.Error("failed_loading_active_leads_during_recovery", "campaign_id", camp.ID, "error", err)
+			return fmt.Errorf("failed recovering active leads for campaign %s: %w", camp.ID, err)
+		}
+
+		if len(leads) > 0 {
 			engine.HydrateLeads(leads)
 		}
 		s.campaigns[camp.ID] = engine
@@ -81,10 +93,19 @@ func (s *ServerState) getOrHydrateCampaign(ctx context.Context, campaignID strin
 		return engine, nil
 	}
 
+	// Reclaim any expired leases
+	_, _ = s.repo.ReclaimExpiredLeases(ctx, camp.ID, 2*time.Minute)
+
 	engine = queue.NewCampaignEngine(camp, s.dncFilter, s.tzGov, nil)
 	engine.SetRepository(s.repo)
+
 	leads, err := s.repo.GetActiveLeads(ctx, camp.ID)
-	if err == nil && len(leads) > 0 {
+	if err != nil {
+		logger.L.Error("failed_lazy_hydrating_leads", "campaign_id", camp.ID, "error", err)
+		return nil, fmt.Errorf("failed hydrating leads: %w", err)
+	}
+
+	if len(leads) > 0 {
 		engine.HydrateLeads(leads)
 	}
 	s.campaigns[campaignID] = engine

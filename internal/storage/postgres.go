@@ -21,6 +21,7 @@ type CampaignRepository interface {
 	GetActiveLeads(ctx context.Context, campaignID string) ([]*model.Lead, error)
 	IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (insertedIDs []string, duplicates int, err error)
 	ClaimPendingLeads(ctx context.Context, campaignID string, limit int, workerID string) ([]*model.Lead, error)
+	ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error)
 	UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error
 	RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error
 	RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt) error
@@ -195,7 +196,10 @@ func (r *PostgresRepository) GetActiveLeads(ctx context.Context, campaignID stri
 		       status, attempts, max_attempts, failure_reason,
 		       locked_by, locked_at, last_attempt_at, next_attempt_at, created_at
 		FROM leads
-		WHERE campaign_id = $1 AND status IN ('QUEUED', 'DRAFT', 'DIALING')
+		WHERE campaign_id = $1 AND (
+			status IN ('QUEUED', 'DRAFT')
+			OR (status = 'DIALING' AND locked_at IS NOT NULL AND locked_at < NOW() - INTERVAL '2 minutes')
+		)
 		ORDER BY priority DESC, created_at ASC;`
 
 	rows, err := r.pool.Query(ctx, query, campaignID)
@@ -260,8 +264,11 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 		WHERE id IN (
 			SELECT id FROM leads
 			WHERE campaign_id = $2
-			  AND (status = 'QUEUED' OR status = 'DRAFT')
-			  AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())
+			  AND (
+			    ((status = 'QUEUED' OR status = 'DRAFT') AND (next_attempt_at IS NULL OR next_attempt_at <= NOW()))
+			    OR
+			    (status = 'DIALING' AND locked_at IS NOT NULL AND locked_at < NOW() - INTERVAL '2 minutes')
+			  )
 			ORDER BY priority DESC, created_at ASC
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED
@@ -312,6 +319,30 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 	}
 
 	return claimed, nil
+}
+
+// ReclaimExpiredLeases resets DIALING leads with expired leases (> leaseTTL) back to QUEUED for crash recovery
+func (r *PostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error) {
+	if leaseTTL <= 0 {
+		leaseTTL = 2 * time.Minute
+	}
+	ttlSec := int(leaseTTL.Seconds())
+
+	query := `
+		UPDATE leads
+		SET status = 'QUEUED',
+		    locked_by = NULL,
+		    locked_at = NULL
+		WHERE campaign_id = $1
+		  AND status = 'DIALING'
+		  AND locked_at IS NOT NULL
+		  AND locked_at < NOW() - ($2 || ' seconds')::interval;`
+
+	tag, err := r.pool.Exec(ctx, query, campaignID, ttlSec)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // IngestLeadsIdempotent enforces database-level idempotency via ON CONFLICT (campaign_id, phone_number) DO NOTHING RETURNING id.
@@ -606,10 +637,15 @@ func (r *MemoryPostgresRepository) ClaimPendingLeads(ctx context.Context, campai
 	}
 
 	now := time.Now().UTC()
+	const leaseTTL = 2 * time.Minute
 	var candidates []*model.Lead
 	for _, l := range r.leads {
-		if l.CampaignID == campaignID && (l.Status == model.StatusQueued || l.Status == "") {
-			if l.NextAttemptAt == nil || now.After(*l.NextAttemptAt) || now.Equal(*l.NextAttemptAt) {
+		if l.CampaignID == campaignID {
+			isQueued := (l.Status == model.StatusQueued || l.Status == "" || l.Status == "DRAFT") &&
+				(l.NextAttemptAt == nil || now.After(*l.NextAttemptAt) || now.Equal(*l.NextAttemptAt))
+			isExpiredLease := l.Status == model.StatusDialing && l.LockedAt != nil && now.Sub(*l.LockedAt) > leaseTTL
+
+			if isQueued || isExpiredLease {
 				candidates = append(candidates, l)
 			}
 		}
@@ -637,6 +673,29 @@ func (r *MemoryPostgresRepository) ClaimPendingLeads(ctx context.Context, campai
 	res := make([]*model.Lead, len(candidates))
 	copy(res, candidates)
 	return res, nil
+}
+
+func (r *MemoryPostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if leaseTTL <= 0 {
+		leaseTTL = 2 * time.Minute
+	}
+	now := time.Now().UTC()
+	var count int64
+
+	for _, l := range r.leads {
+		if l.CampaignID == campaignID && l.Status == model.StatusDialing && l.LockedAt != nil {
+			if now.Sub(*l.LockedAt) > leaseTTL {
+				l.Status = model.StatusQueued
+				l.LockedBy = ""
+				l.LockedAt = nil
+				count++
+			}
+		}
+	}
+	return count, nil
 }
 
 func (r *MemoryPostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) ([]string, int, error) {
