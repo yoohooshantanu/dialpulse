@@ -47,11 +47,11 @@ func main() {
 	if databaseURL != "" {
 		pgRepo, err := storage.NewPostgresRepositoryFromURL(context.Background(), databaseURL)
 		if err != nil {
-			logger.L.Warn("postgres_connection_failed_fallback_to_memory", "error", err)
-			repo = storage.NewMemoryPostgresRepository()
-		} else {
-			repo = pgRepo
+			logger.L.Error("postgres_connection_failed", "database_url", databaseURL, "error", err)
+			os.Exit(1)
 		}
+		repo = pgRepo
+		logger.L.Info("connected_to_postgres_persistence")
 	} else {
 		logger.L.Info("no_database_url_provided_using_memory_repository")
 		repo = storage.NewMemoryPostgresRepository()
@@ -92,6 +92,8 @@ func main() {
 
 		if err := state.repo.SaveCampaign(r.Context(), &req); err != nil {
 			logger.L.Error("failed_saving_campaign", "error", err)
+			http.Error(w, `{"error":"failed to persist campaign"}`, http.StatusInternalServerError)
+			return
 		}
 
 		engine := queue.NewCampaignEngine(&req, state.dncFilter, state.tzGov, nil)
@@ -152,7 +154,12 @@ func main() {
 				http.Error(w, `{"error":"invalid JSON leads array"}`, http.StatusBadRequest)
 				return
 			}
-			count, duplicates := engine.IngestLeads(leads)
+			count, duplicates, err := engine.IngestLeads(r.Context(), leads)
+			if err != nil {
+				logger.L.Error("failed_ingesting_leads", "campaign_id", campaignID, "error", err)
+				http.Error(w, `{"error":"failed to ingest leads"}`, http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"campaign_id": campaignID,

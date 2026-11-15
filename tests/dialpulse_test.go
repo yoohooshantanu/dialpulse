@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -130,7 +131,10 @@ func TestCampaignPriorityDispatching(t *testing.T) {
 		{ID: "lead_med", PhoneNumber: "2125550003", Priority: 50},
 	}
 
-	ingested, _ := engine.IngestLeads(leads)
+	ingested, _, err := engine.IngestLeads(context.Background(), leads)
+	if err != nil {
+		t.Fatalf("unexpected ingest error: %v", err)
+	}
 	if ingested != 3 {
 		t.Fatalf("expected 3 leads ingested, got %d", ingested)
 	}
@@ -165,7 +169,7 @@ func TestCampaignExecutionLifecycle(t *testing.T) {
 		{PhoneNumber: "2125554444", Priority: 40},
 	}
 
-	engine.IngestLeads(leads)
+	_, _, _ = engine.IngestLeads(context.Background(), leads)
 	engine.Start()
 
 	// Wait for background dispatch ticks
@@ -212,7 +216,7 @@ func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
 		PhoneNumber: nyPhone,
 		Priority:    100,
 	}
-	engine.IngestLeads([]*model.Lead{lead})
+	_, _, _ = engine.IngestLeads(context.Background(), []*model.Lead{lead})
 
 	// Set lead NextAttemptAt 1 hour into future
 	future := time.Now().UTC().Add(1 * time.Hour)
@@ -248,7 +252,10 @@ func TestIdempotentLeadIngestionDeduplication(t *testing.T) {
 		{PhoneNumber: "4155550200", Priority: 40},  // Distinct number
 	}
 
-	accepted, duplicates := engine.IngestLeads(leads)
+	accepted, duplicates, err := engine.IngestLeads(context.Background(), leads)
+	if err != nil {
+		t.Fatalf("unexpected ingest error: %v", err)
+	}
 	if accepted != 2 {
 		t.Errorf("expected 2 unique accepted leads, got %d", accepted)
 	}
@@ -282,7 +289,7 @@ func TestDeadLetterQueueRouting(t *testing.T) {
 		{ID: "lead_dnc_fail", PhoneNumber: "2125550099", Priority: 10, MaxAttempts: 1},
 		{ID: "lead_exhaust_fail", PhoneNumber: "2125550088", Priority: 20, MaxAttempts: 1},
 	}
-	engine.IngestLeads(leads)
+	_, _, _ = engine.IngestLeads(context.Background(), leads)
 
 	engine.Start()
 	time.Sleep(150 * time.Millisecond)
@@ -321,7 +328,7 @@ func TestMultiCampaignConcurrencyIsolation(t *testing.T) {
 			{PhoneNumber: "212555100" + string(rune('0'+i)), Priority: 50},
 			{PhoneNumber: "212555200" + string(rune('0'+i)), Priority: 40},
 		}
-		engine.IngestLeads(leads)
+		_, _, _ = engine.IngestLeads(context.Background(), leads)
 		engines[i] = engine
 	}
 
@@ -366,7 +373,7 @@ func TestBusyCallRetryBackoff(t *testing.T) {
 		Priority:    50,
 		MaxAttempts: 3,
 	}
-	engine.IngestLeads([]*model.Lead{lead})
+	_, _, _ = engine.IngestLeads(context.Background(), []*model.Lead{lead})
 
 	engine.Start()
 	time.Sleep(120 * time.Millisecond)
@@ -487,7 +494,7 @@ func TestInFlightDialLimiting(t *testing.T) {
 			Priority:    10,
 		})
 	}
-	engine.IngestLeads(leads)
+	_, _, _ = engine.IngestLeads(context.Background(), leads)
 
 	engine.Start()
 	// Let ticker fire twice (100ms)
@@ -515,7 +522,7 @@ func TestPacerSingleOutcomeAccounting(t *testing.T) {
 	}
 
 	engine := queue.NewCampaignEngine(camp, nil, nil, dialer)
-	engine.IngestLeads([]*model.Lead{
+	_, _, _ = engine.IngestLeads(context.Background(), []*model.Lead{
 		{PhoneNumber: "+12125559091", Priority: 100},
 		{PhoneNumber: "+12125559092", Priority: 90},
 		{PhoneNumber: "+12125559093", Priority: 80},
@@ -539,4 +546,45 @@ func TestPacerSingleOutcomeAccounting(t *testing.T) {
 	}
 
 	engine.Stop()
+}
+
+
+type failingRepo struct {
+	storage.CampaignRepository
+}
+
+func (f *failingRepo) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (int, int, error) {
+	return 0, 0, fmt.Errorf("simulated postgres connection failure / deadlock")
+}
+
+func TestSynchronousIngestRejectsOnStorageFailure(t *testing.T) {
+	camp := &model.Campaign{
+		ID:              "camp_fail_test",
+		AllocatedAgents: 5,
+	}
+
+	engine := queue.NewCampaignEngine(camp, nil, nil, nil)
+	engine.SetRepository(&failingRepo{})
+
+	leads := []*model.Lead{
+		{PhoneNumber: "+12125559901", Priority: 50},
+		{PhoneNumber: "+12125559902", Priority: 40},
+	}
+
+	accepted, duplicates, err := engine.IngestLeads(context.Background(), leads)
+	if err == nil {
+		t.Fatalf("expected error from failing repository, got nil")
+	}
+	if accepted != 0 {
+		t.Errorf("expected 0 accepted leads on persistence error, got %d", accepted)
+	}
+	if duplicates != 0 {
+		t.Errorf("expected 0 duplicates on error, got %d", duplicates)
+	}
+
+	// Verify nothing was admitted to in-memory queue
+	stats := engine.GetStats()
+	if stats.TotalLeads != 0 {
+		t.Errorf("expected 0 leads admitted to queue, got %d", stats.TotalLeads)
+	}
 }
