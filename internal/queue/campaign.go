@@ -224,7 +224,13 @@ func (e *CampaignEngine) Start() {
 		return
 	}
 	e.campaign.Status = model.CampaignRunning
+	repo := e.repo
+	campaignID := e.campaign.ID
 	e.mu.Unlock()
+
+	if repo != nil {
+		_ = repo.UpdateCampaignStatus(context.Background(), campaignID, model.CampaignRunning)
+	}
 
 	go e.dispatchLoop()
 }
@@ -321,11 +327,11 @@ func (e *CampaignEngine) tick() {
 
 
 // persistCallOutcome updates lead status and records call attempts in PostgreSQL with atomic transactional persistence and error tracking
-func (e *CampaignEngine) persistCallOutcome(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt) {
+func (e *CampaignEngine) persistCallOutcome(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int) {
 	if e.repo == nil {
 		return
 	}
-	if err := e.repo.RecordCallOutcomeTx(ctx, leadID, status, reason, nextAttempt, attempt); err != nil {
+	if err := e.repo.RecordCallOutcomeTx(ctx, leadID, status, reason, nextAttempt, attempt, attempts); err != nil {
 		metrics.DefaultMetrics.IncStorageErrors()
 		logger.L.Error("failed_recording_call_outcome_tx", "lead_id", leadID, "status", status, "error", err)
 	}
@@ -405,7 +411,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			Status:       model.StatusDLQ,
 			ErrorMessage: "DNC_PROHIBITED",
 			CreatedAt:    time.Now().UTC(),
-		})
+		}, lead.Attempts)
 		logger.L.Warn("dial_routed_to_dlq_dnc", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 		return
 	}
@@ -419,8 +425,18 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			// Return to queue for next valid window with backoff hold
 			e.mu.Lock()
 			lead.NextAttemptAt = &nextPermissible
+			lead.Status = model.StatusQueued
+			lead.LockedBy = ""
+			lead.LockedAt = nil
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
+
+			if e.repo != nil {
+				if err := e.repo.RescheduleLead(context.Background(), lead.ID, nextPermissible); err != nil {
+					metrics.DefaultMetrics.IncStorageErrors()
+					logger.L.Error("failed_rescheduling_timezone_blocked_lead", "lead_id", lead.ID, "error", err)
+				}
+			}
 			return
 		}
 	}
@@ -434,6 +450,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	now := time.Now().UTC()
 	lead.LastAttemptAt = &now
 	lead.Attempts++
+	currentAttempts := lead.Attempts
 	e.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
@@ -465,7 +482,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			RingDurationMs: int(ringDuration.Milliseconds()),
 			ErrorMessage:   attemptErr,
 			CreatedAt:      time.Now().UTC(),
-		})
+		}, currentAttempts)
 		return
 	}
 
@@ -485,6 +502,8 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			e.mu.Lock()
 			lead.NextAttemptAt = &retryTime
 			lead.Status = finalStatus
+			lead.LockedBy = ""
+			lead.LockedAt = nil
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
 
@@ -498,7 +517,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				Status:         status,
 				RingDurationMs: int(ringDuration.Milliseconds()),
 				CreatedAt:      time.Now().UTC(),
-			})
+			}, currentAttempts)
 			logger.L.Info("lead_retry_scheduled", "lead_id", lead.ID, "attempt", lead.Attempts, "retry_at", retryTime)
 			return
 		}
@@ -509,6 +528,8 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		e.mu.Lock()
 		lead.Status = finalStatus
 		lead.FailureReason = attemptErr
+		lead.LockedBy = ""
+		lead.LockedAt = nil
 		e.dlq = append(e.dlq, lead)
 		e.mu.Unlock()
 
@@ -523,7 +544,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			RingDurationMs: int(ringDuration.Milliseconds()),
 			ErrorMessage:   attemptErr,
 			CreatedAt:      time.Now().UTC(),
-		})
+		}, currentAttempts)
 		logger.L.Warn("lead_routed_to_dlq_exhausted", "lead_id", lead.ID, "attempts", lead.Attempts)
 		return
 	}
@@ -532,6 +553,8 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		finalStatus = status
 		e.mu.Lock()
 		lead.Status = finalStatus
+		lead.LockedBy = ""
+		lead.LockedAt = nil
 		e.mu.Unlock()
 
 		e.pacer.RecordOutcome(status)
@@ -543,7 +566,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			Status:         finalStatus,
 			RingDurationMs: int(ringDuration.Milliseconds()),
 			CreatedAt:      time.Now().UTC(),
-		})
+		}, currentAttempts)
 		return
 	}
 
@@ -554,6 +577,8 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			finalStatus = model.StatusConnected
 			e.mu.Lock()
 			lead.Status = finalStatus
+			lead.LockedBy = ""
+			lead.LockedAt = nil
 			e.mu.Unlock()
 
 			e.pacer.RecordOutcome(model.StatusConnected)
@@ -577,7 +602,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				RingDurationMs: int(ringDuration.Milliseconds()),
 				TalkDurationMs: int(talkDuration.Milliseconds()),
 				CreatedAt:      time.Now().UTC(),
-			})
+			}, currentAttempts)
 		} else {
 			// No agent was available when customer answered -> Abandoned Call!
 			atomic.AddInt32(&e.idleAgents, 1)
@@ -586,6 +611,8 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 
 			e.mu.Lock()
 			lead.Status = finalStatus
+			lead.LockedBy = ""
+			lead.LockedAt = nil
 			e.mu.Unlock()
 
 			e.pacer.RecordOutcome(model.StatusAbandoned)
@@ -601,7 +628,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				RingDurationMs: int(ringDuration.Milliseconds()),
 				ErrorMessage:   attemptErr,
 				CreatedAt:      time.Now().UTC(),
-			})
+			}, currentAttempts)
 		}
 		return
 	}
@@ -609,6 +636,8 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	// Fallback terminal status
 	e.mu.Lock()
 	lead.Status = status
+	lead.LockedBy = ""
+	lead.LockedAt = nil
 	e.mu.Unlock()
 	e.pacer.RecordOutcome(status)
 	e.persistCallOutcome(context.Background(), lead.ID, status, "", nil, &model.CallAttempt{
@@ -619,7 +648,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		Status:         status,
 		RingDurationMs: int(ringDuration.Milliseconds()),
 		CreatedAt:      time.Now().UTC(),
-	})
+	}, currentAttempts)
 }
 
 // GetStats returns live statistical progress

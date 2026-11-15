@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"github.com/google/uuid"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/yoohooshantanu/dialpulse/internal/dnc"
 	"github.com/yoohooshantanu/dialpulse/internal/model"
@@ -881,7 +883,7 @@ func TestAtomicTransactionalOutcomePersistence(t *testing.T) {
 	}
 
 	// Atomically persist outcome
-	err := repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attempt)
+	err := repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attempt, 1)
 	if err != nil {
 		t.Fatalf("expected atomic outcome persistence to succeed: %v", err)
 	}
@@ -987,29 +989,45 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 		t.Fatalf("failed batch ingesting live leads: %v", err)
 	}
 
-	// 1. Concurrent competing workers against live PostgreSQL: 2 workers claim 10 leads each
-	claimedWorkerA, errA := pgRepo.ClaimPendingLeads(ctx, camp.ID, 10, "worker-node-A")
-	if errA != nil {
-		t.Fatalf("worker A claim failed: %v", errA)
-	}
-	claimedWorkerB, errB := pgRepo.ClaimPendingLeads(ctx, camp.ID, 10, "worker-node-B")
-	if errB != nil {
-		t.Fatalf("worker B claim failed: %v", errB)
+	// 1. Genuinely concurrent competing workers against live PostgreSQL: 4 workers simultaneously competing for 20 leads
+	const numWorkers = 4
+	const batchPerWorker = 5
+	var wg sync.WaitGroup
+	claimedByWorker := make([][]*model.Lead, numWorkers)
+	errs := make([]error, numWorkers)
+
+	startBarrier := make(chan struct{})
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerIdx int) {
+			defer wg.Done()
+			<-startBarrier
+			workerID := fmt.Sprintf("worker-node-%d", workerIdx)
+			claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, batchPerWorker, workerID)
+			claimedByWorker[workerIdx] = claimed
+			errs[workerIdx] = err
+		}(w)
 	}
 
-	if len(claimedWorkerA) != 10 || len(claimedWorkerB) != 10 {
-		t.Fatalf("expected 10 leads each, got A=%d, B=%d", len(claimedWorkerA), len(claimedWorkerB))
-	}
+	close(startBarrier) // Release all workers simultaneously to compete for rows in PostgreSQL
+	wg.Wait()
 
-	// Verify mutually exclusive claims (zero double-dialing across live PostgreSQL workers)
-	seen := make(map[string]bool)
-	for _, l := range claimedWorkerA {
-		seen[l.ID] = true
-	}
-	for _, l := range claimedWorkerB {
-		if seen[l.ID] {
-			t.Fatalf("lead %s was double-claimed by both workers on live PostgreSQL!", l.ID)
+	totalClaimed := 0
+	seen := make(map[string]string)
+	for w := 0; w < numWorkers; w++ {
+		if errs[w] != nil {
+			t.Fatalf("worker %d claim failed: %v", w, errs[w])
 		}
+		totalClaimed += len(claimedByWorker[w])
+		for _, l := range claimedByWorker[w] {
+			if prevWorker, duplicate := seen[l.ID]; duplicate {
+				t.Fatalf("lead %s was double-claimed by both %s and worker-node-%d on live PostgreSQL!", l.ID, prevWorker, w)
+			}
+			seen[l.ID] = fmt.Sprintf("worker-node-%d", w)
+		}
+	}
+	if totalClaimed != numLeads {
+		t.Fatalf("expected all %d leads to be claimed, got %d", numLeads, totalClaimed)
 	}
 
 	// 2. Expired Lease Recovery: Simulate worker crash during call
@@ -1065,5 +1083,287 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 	}
 	if recovered[0].LockedBy != "surviving-worker-new" {
 		t.Errorf("expected lock updated to surviving-worker-new, got %s", recovered[0].LockedBy)
+	}
+}
+
+// -------------------------------------------------------------
+// Live PostgreSQL Competing Engines Scheduler Integration Test
+// -------------------------------------------------------------
+
+type callbackDialer struct {
+	dialFn func(ctx context.Context, lead *model.Lead) (model.CallStatus, time.Duration, error)
+}
+
+func (d *callbackDialer) Dial(ctx context.Context, lead *model.Lead) (model.CallStatus, time.Duration, error) {
+	if d.dialFn != nil {
+		return d.dialFn(ctx, lead)
+	}
+	return model.StatusAnswered, 10 * time.Millisecond, nil
+}
+
+func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	campID := "camp_engine_compete_" + uuid.NewString()[:8]
+	camp := &model.Campaign{
+		ID:                campID,
+		Name:              "Live Competing Engines Scheduler Test",
+		AllocatedAgents:   10,
+		TargetAbandonRate: 0.025,
+		Status:            model.CampaignDraft,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	const numLeads = 12
+	var leads []*model.Lead
+	for i := 0; i < numLeads; i++ {
+		leads = append(leads, &model.Lead{
+			ID:          fmt.Sprintf("live_eng_%02d", i),
+			CampaignID:  camp.ID,
+			PhoneNumber: fmt.Sprintf("+1415556%04d", 3000+i),
+			Priority:    i,
+			Status:      model.StatusQueued,
+			CreatedAt:   time.Now().UTC(),
+		})
+	}
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, leads)
+	if err != nil {
+		t.Fatalf("failed ingesting leads: %v", err)
+	}
+
+	// Shared dial ledger across both engines
+	var dialMu sync.Mutex
+	dialCounts := make(map[string]int)
+
+	recordingDialer := &callbackDialer{
+		dialFn: func(ctx context.Context, lead *model.Lead) (model.CallStatus, time.Duration, error) {
+			dialMu.Lock()
+			dialCounts[lead.ID]++
+			dialMu.Unlock()
+			return model.StatusAnswered, 10 * time.Millisecond, nil
+		},
+	}
+
+	// Instantiate two independent running CampaignEngine instances sharing PostgreSQL
+	engine1 := queue.NewCampaignEngine(camp, nil, nil, recordingDialer)
+	engine1.SetRepository(pgRepo)
+
+	engine2 := queue.NewCampaignEngine(camp, nil, nil, recordingDialer)
+	engine2.SetRepository(pgRepo)
+
+	// Launch both engines simultaneously via Start() -> tick() background dispatch loops
+	engine1.Start()
+	engine2.Start()
+
+	// Wait for background tick loops to process all leads
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		dialMu.Lock()
+		count := len(dialCounts)
+		dialMu.Unlock()
+		if count >= numLeads {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	engine1.Stop()
+	engine2.Stop()
+
+	dialMu.Lock()
+	defer dialMu.Unlock()
+
+	if len(dialCounts) != numLeads {
+		t.Fatalf("expected all %d leads dialed, got %d", numLeads, len(dialCounts))
+	}
+	// Assert zero double-dialing across competing scheduler engines
+	for leadID, count := range dialCounts {
+		if count > 1 {
+			t.Errorf("lead %s was dialed %d times (expected exactly 1 dial across engines)", leadID, count)
+		}
+	}
+}
+
+func TestTimezoneCurfewPersistentReschedule(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:                "camp_curfew_resched_test",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+		Status:            model.CampaignDraft,
+	}
+	_ = repo.SaveCampaign(ctx, camp)
+
+	tzGov := timezone.NewTimezoneGovernor()
+	engine := queue.NewCampaignEngine(camp, nil, tzGov, nil)
+	engine.SetRepository(repo)
+
+	lead := &model.Lead{
+		ID:          "lead_curfew_persistent",
+		CampaignID:  camp.ID,
+		PhoneNumber: "+12125550100", // New York
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	// Manually claim lead as tick() would
+	claimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "test-worker")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming lead: %v", err)
+	}
+
+	// Simulate curfew block reschedule via RescheduleLead
+	futureTime := time.Now().UTC().Add(8 * time.Hour)
+	err = repo.RescheduleLead(ctx, lead.ID, futureTime)
+	if err != nil {
+		t.Fatalf("failed rescheduling lead: %v", err)
+	}
+
+	// Verify in database: status is QUEUED, lock cleared, attempts = 0
+	active, err := repo.GetActiveLeads(ctx, camp.ID)
+	if err != nil || len(active) != 1 {
+		t.Fatalf("expected 1 active lead, got %v", active)
+	}
+	if active[0].Status != model.StatusQueued {
+		t.Errorf("expected status QUEUED, got %s", active[0].Status)
+	}
+	if active[0].LockedBy != "" {
+		t.Errorf("expected lock cleared, got %s", active[0].LockedBy)
+	}
+	if active[0].Attempts != 0 {
+		t.Errorf("expected 0 attempts consumed by curfew holdoff, got %d", active[0].Attempts)
+	}
+
+	// Claiming again right now must return 0 leads because next_attempt_at is in the future
+	reclaimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "test-worker-2")
+	if err != nil {
+		t.Fatalf("claim failed: %v", err)
+	}
+	if len(reclaimed) != 0 {
+		t.Errorf("expected 0 leads claimable during holdoff window, got %d", len(reclaimed))
+	}
+}
+
+func TestAttemptCountingExactnessAndConsistency(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:                "camp_attempts_test",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+		Status:            model.CampaignDraft,
+	}
+	_ = repo.SaveCampaign(ctx, camp)
+
+	lead := &model.Lead{
+		ID:          "lead_attempts_exact",
+		CampaignID:  camp.ID,
+		PhoneNumber: "+14155557788",
+		Status:      model.StatusQueued,
+		MaxAttempts: 3,
+		Attempts:    0,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	// 1. Claiming does NOT increment attempts
+	claimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-1")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming: %v", err)
+	}
+	if claimed[0].Attempts != 0 {
+		t.Errorf("expected 0 attempts on claim, got %d", claimed[0].Attempts)
+	}
+
+	// 2. Call attempt occurs (dial 1) -> busy -> retry 1 scheduled in the past to simulate elapsed backoff
+	pastRetry := time.Now().UTC().Add(-10 * time.Millisecond)
+	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusQueued, "BUSY", &pastRetry, nil, 1)
+	if err != nil {
+		t.Fatalf("failed recording outcome 1: %v", err)
+	}
+
+	// Verify database attempt count is 1
+	active, _ := repo.GetActiveLeads(ctx, camp.ID)
+	if len(active) != 1 || active[0].Attempts != 1 {
+		t.Fatalf("expected DB attempts=1, got %v", active)
+	}
+
+	// 3. Dial 2 -> busy -> retry 2
+	claimed, _ = repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-1")
+	if len(claimed) != 1 || claimed[0].Attempts != 1 {
+		t.Fatalf("expected claim with attempts=1, got %v", claimed)
+	}
+	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusQueued, "BUSY", &pastRetry, nil, 2)
+	if err != nil {
+		t.Fatalf("failed recording outcome 2: %v", err)
+	}
+
+	// 4. Dial 3 -> busy -> max attempts exhausted -> DLQ
+	claimed, _ = repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-1")
+	if len(claimed) != 1 || claimed[0].Attempts != 2 {
+		t.Fatalf("expected claim with attempts=2, got %v", claimed)
+	}
+	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusDLQ, "EXHAUSTED_MAX_ATTEMPTS", nil, nil, 3)
+	if err != nil {
+		t.Fatalf("failed recording DLQ outcome: %v", err)
+	}
+
+	// Verify in DLQ: exactly 3 attempts
+	dlq, err := repo.GetDeadLetterQueue(ctx, camp.ID)
+	if err != nil || len(dlq) != 1 {
+		t.Fatalf("expected 1 lead in DLQ, got %v", dlq)
+	}
+	if dlq[0].Attempts != 3 {
+		t.Errorf("expected exactly 3 attempts in DLQ, got %d", dlq[0].Attempts)
+	}
+}
+
+func TestDNCPersistenceAcrossRestart(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	dncList := []string{"+14155550011", "+14155550022", "+14155550033"}
+	err := repo.AddDNCNumbers(ctx, dncList)
+	if err != nil {
+		t.Fatalf("failed adding DNC numbers: %v", err)
+	}
+
+	// Simulate restart: load DNC numbers from storage into new Bloom filter
+	loaded, err := repo.GetDNCNumbers(ctx)
+	if err != nil {
+		t.Fatalf("failed loading DNC numbers: %v", err)
+	}
+	if len(loaded) != len(dncList) {
+		t.Fatalf("expected %d loaded numbers, got %d", len(dncList), len(loaded))
+	}
+
+	newBloom := dnc.NewBloomFilter(100000, 0.001)
+	for _, n := range loaded {
+		newBloom.Add(n)
+	}
+
+	for _, n := range dncList {
+		if !newBloom.Contains(n) {
+			t.Errorf("expected DNC filter to contain %s after restart hydration", n)
+		}
+	}
+	if newBloom.Contains("+14155559999") {
+		t.Errorf("unexpected number found in DNC filter")
 	}
 }

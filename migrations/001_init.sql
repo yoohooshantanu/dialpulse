@@ -53,3 +53,9 @@ CREATE TABLE IF NOT EXISTS call_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_call_attempts_campaign 
     ON call_attempts (campaign_id, created_at DESC);
+
+-- Do-Not-Call (DNC) Persistent Registry
+CREATE TABLE IF NOT EXISTS dnc_numbers (
+    phone_number VARCHAR(32) PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

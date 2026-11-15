@@ -48,7 +48,9 @@ func (s *ServerState) recoverCampaigns(ctx context.Context) error {
 
 	for _, camp := range camps {
 		// Reclaim any orphaned leases from crashed previous instances
-		if reclaimed, err := s.repo.ReclaimExpiredLeases(ctx, camp.ID, 2*time.Minute); err == nil && reclaimed > 0 {
+		if reclaimed, err := s.repo.ReclaimExpiredLeases(ctx, camp.ID, 2*time.Minute); err != nil {
+			logger.L.Error("failed_reclaiming_expired_leases_during_recovery", "campaign_id", camp.ID, "error", err)
+		} else if reclaimed > 0 {
 			logger.L.Warn("orphaned_dialing_leases_reclaimed", "campaign_id", camp.ID, "count", reclaimed)
 		}
 
@@ -67,8 +69,15 @@ func (s *ServerState) recoverCampaigns(ctx context.Context) error {
 		s.campaigns[camp.ID] = engine
 		logger.L.Info("campaign_recovered_on_startup",
 			"campaign_id", camp.ID,
+			"status", camp.Status,
 			"leads_loaded", len(leads),
 		)
+
+		// Automatically resume execution for campaigns marked RUNNING
+		if camp.Status == model.CampaignRunning {
+			engine.Start()
+			logger.L.Info("campaign_resumed_on_startup", "campaign_id", camp.ID)
+		}
 	}
 	return nil
 }
@@ -139,6 +148,19 @@ func main() {
 		dncFilter: dnc.NewBloomFilter(1000000, 0.001),
 		tzGov:     timezone.NewTimezoneGovernor(),
 		repo:      repo,
+	}
+
+	// Recover and hydrate DNC persistent registry into Bloom filter
+	if repo != nil {
+		dncNumbers, err := repo.GetDNCNumbers(context.Background())
+		if err != nil {
+			logger.L.Error("failed_loading_dnc_registry_on_startup", "error", err)
+		} else {
+			for _, num := range dncNumbers {
+				state.dncFilter.Add(num)
+			}
+			logger.L.Info("dnc_registry_hydrated_from_database", "count", len(dncNumbers))
+		}
 	}
 
 	// Recover existing active campaigns and leads from storage on startup
@@ -262,6 +284,9 @@ func main() {
 				return
 			}
 			engine.Start()
+			if state.repo != nil {
+				_ = state.repo.UpdateCampaignStatus(r.Context(), campaignID, model.CampaignRunning)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "running"})
 
@@ -293,6 +318,14 @@ func main() {
 
 		for _, p := range req.PhoneNumbers {
 			state.dncFilter.Add(p)
+		}
+
+		if state.repo != nil {
+			if err := state.repo.AddDNCNumbers(r.Context(), req.PhoneNumbers); err != nil {
+				logger.L.Error("failed_persisting_dnc_numbers", "error", err)
+				http.Error(w, `{"error":"failed to persist DNC registry numbers"}`, http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")

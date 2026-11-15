@@ -18,14 +18,18 @@ type CampaignRepository interface {
 	SaveCampaign(ctx context.Context, camp *model.Campaign) error
 	GetCampaign(ctx context.Context, id string) (*model.Campaign, error)
 	ListActiveCampaigns(ctx context.Context) ([]*model.Campaign, error)
+	UpdateCampaignStatus(ctx context.Context, campaignID string, status model.CampaignStatus) error
 	GetActiveLeads(ctx context.Context, campaignID string) ([]*model.Lead, error)
 	IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (insertedIDs []string, duplicates int, err error)
 	ClaimPendingLeads(ctx context.Context, campaignID string, limit int, workerID string) ([]*model.Lead, error)
 	ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error)
+	RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time) error
 	UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error
 	RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error
-	RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt) error
+	RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int) error
 	GetDeadLetterQueue(ctx context.Context, campaignID string) ([]*model.Lead, error)
+	AddDNCNumbers(ctx context.Context, numbers []string) error
+	GetDNCNumbers(ctx context.Context) ([]string, error)
 	Close()
 }
 
@@ -195,6 +199,12 @@ func (r *PostgresRepository) ListActiveCampaigns(ctx context.Context) ([]*model.
 	return list, nil
 }
 
+func (r *PostgresRepository) UpdateCampaignStatus(ctx context.Context, campaignID string, status model.CampaignStatus) error {
+	query := `UPDATE campaigns SET status = $1, updated_at = NOW() WHERE id = $2;`
+	_, err := r.pool.Exec(ctx, query, string(status), campaignID)
+	return err
+}
+
 func (r *PostgresRepository) GetActiveLeads(ctx context.Context, campaignID string) ([]*model.Lead, error) {
 	query := `
 		SELECT id, campaign_id, phone_number, name, priority,
@@ -263,9 +273,7 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 		UPDATE leads
 		SET status = 'DIALING',
 		    locked_by = $1,
-		    locked_at = NOW(),
-		    attempts = attempts + 1,
-		    last_attempt_at = NOW()
+		    locked_at = NOW()
 		WHERE id IN (
 			SELECT id FROM leads
 			WHERE campaign_id = $2
@@ -349,6 +357,19 @@ func (r *PostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignI
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// RescheduleLead unlocks a lead and returns it to QUEUED with a future next_attempt_at schedule (used for curfew holdoff)
+func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time) error {
+	query := `
+		UPDATE leads
+		SET status = 'QUEUED',
+		    next_attempt_at = $1,
+		    locked_by = NULL,
+		    locked_at = NULL
+		WHERE id = $2;`
+	_, err := r.pool.Exec(ctx, query, nextAttempt, leadID)
+	return err
 }
 
 // IngestLeadsIdempotent enforces database-level idempotency via ON CONFLICT (campaign_id, phone_number) DO NOTHING RETURNING id.
@@ -453,7 +474,7 @@ func (r *PostgresRepository) RecordCallAttempt(ctx context.Context, attempt *mod
 }
 
 // RecordCallOutcomeTx atomically persists lead status and call attempt within a single database transaction with bounded retry
-func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt) error {
+func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int) error {
 	var lastErr error
 	backoff := 50 * time.Millisecond
 
@@ -471,10 +492,11 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 				    failure_reason = $2,
 				    next_attempt_at = $3,
 				    last_attempt_at = NOW(),
+				    attempts = $4,
 				    locked_by = NULL,
 				    locked_at = NULL
-				WHERE id = $4;`
-			if _, err := tx.Exec(ctx, updateQuery, string(status), reason, nextAttempt, leadID); err != nil {
+				WHERE id = $5;`
+			if _, err := tx.Exec(ctx, updateQuery, string(status), reason, nextAttempt, attempts, leadID); err != nil {
 				return fmt.Errorf("failed updating lead status in tx: %w", err)
 			}
 
@@ -563,6 +585,45 @@ func (r *PostgresRepository) GetDeadLetterQueue(ctx context.Context, campaignID 
 	return dlq, nil
 }
 
+// AddDNCNumbers persistently saves phone numbers into the PostgreSQL dnc_numbers table
+func (r *PostgresRepository) AddDNCNumbers(ctx context.Context, numbers []string) error {
+	if len(numbers) == 0 {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin tx for DNC insert: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	query := `INSERT INTO dnc_numbers (phone_number) VALUES ($1) ON CONFLICT (phone_number) DO NOTHING;`
+	for _, num := range numbers {
+		if _, err := tx.Exec(ctx, query, num); err != nil {
+			return fmt.Errorf("failed inserting dnc number %s: %w", num, err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// GetDNCNumbers retrieves all persistently registered DNC numbers across instances
+func (r *PostgresRepository) GetDNCNumbers(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `SELECT phone_number FROM dnc_numbers;`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var num string
+		if err := rows.Scan(&num); err != nil {
+			return nil, err
+		}
+		result = append(result, num)
+	}
+	return result, nil
+}
+
 // MemoryPostgresRepository provides an in-memory replica with identical relational semantics and idempotency constraints
 type MemoryPostgresRepository struct {
 	mu         sync.RWMutex
@@ -571,6 +632,7 @@ type MemoryPostgresRepository struct {
 	phoneIndex map[string]string // Key: campaignID + ":" + phone
 	dlq        map[string][]*model.Lead
 	attempts   map[string][]*model.CallAttempt
+	dncNumbers map[string]bool
 }
 
 func NewMemoryPostgresRepository() *MemoryPostgresRepository {
@@ -580,6 +642,7 @@ func NewMemoryPostgresRepository() *MemoryPostgresRepository {
 		phoneIndex: make(map[string]string),
 		dlq:        make(map[string][]*model.Lead),
 		attempts:   make(map[string][]*model.CallAttempt),
+		dncNumbers: make(map[string]bool),
 	}
 }
 
@@ -589,6 +652,17 @@ func (r *MemoryPostgresRepository) SaveCampaign(ctx context.Context, camp *model
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.campaigns[camp.ID] = camp
+	return nil
+}
+
+func (r *MemoryPostgresRepository) UpdateCampaignStatus(ctx context.Context, campaignID string, status model.CampaignStatus) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.campaigns[campaignID]
+	if !ok {
+		return model.ErrCampaignNotFound
+	}
+	c.Status = status
 	return nil
 }
 
@@ -672,13 +746,26 @@ func (r *MemoryPostgresRepository) ClaimPendingLeads(ctx context.Context, campai
 		l.Status = model.StatusDialing
 		l.LockedBy = workerID
 		l.LockedAt = &now
-		l.Attempts++
-		l.LastAttemptAt = &now
 	}
 
 	res := make([]*model.Lead, len(candidates))
 	copy(res, candidates)
 	return res, nil
+}
+
+func (r *MemoryPostgresRepository) RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	lead, ok := r.leads[leadID]
+	if !ok {
+		return model.ErrLeadNotFound
+	}
+	lead.Status = model.StatusQueued
+	lead.NextAttemptAt = &nextAttempt
+	lead.LockedBy = ""
+	lead.LockedAt = nil
+	return nil
 }
 
 func (r *MemoryPostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error) {
@@ -756,7 +843,7 @@ func (r *MemoryPostgresRepository) RecordCallAttempt(ctx context.Context, attemp
 	return nil
 }
 
-func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt) error {
+func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -768,6 +855,7 @@ func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, lead
 	lead.Status = status
 	lead.FailureReason = reason
 	lead.NextAttemptAt = nextAttempt
+	lead.Attempts = attempts
 	lead.LockedBy = ""
 	lead.LockedAt = nil
 	now := time.Now().UTC()
@@ -782,6 +870,25 @@ func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, lead
 	}
 
 	return nil
+}
+
+func (r *MemoryPostgresRepository) AddDNCNumbers(ctx context.Context, numbers []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range numbers {
+		r.dncNumbers[n] = true
+	}
+	return nil
+}
+
+func (r *MemoryPostgresRepository) GetDNCNumbers(ctx context.Context) ([]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var res []string
+	for n := range r.dncNumbers {
+		res = append(res, n)
+	}
+	return res, nil
 }
 
 func (r *MemoryPostgresRepository) GetDeadLetterQueue(ctx context.Context, campaignID string) ([]*model.Lead, error) {
