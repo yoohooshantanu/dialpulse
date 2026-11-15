@@ -1013,10 +1013,22 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 	}
 
 	// 2. Expired Lease Recovery: Simulate worker crash during call
+	campCrashID := "camp_crash_live_" + uuid.NewString()[:8]
+	campCrash := &model.Campaign{
+		ID:                campCrashID,
+		Name:              "Live Crash Recovery Campaign",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+		Status:            model.CampaignRunning,
+	}
+	if err := pgRepo.SaveCampaign(ctx, campCrash); err != nil {
+		t.Fatalf("failed saving crash campaign: %v", err)
+	}
+
 	crashedLeadID := "live_claim_crashed"
 	crashedLead := &model.Lead{
 		ID:          crashedLeadID,
-		CampaignID:  camp.ID,
+		CampaignID:  campCrash.ID,
 		PhoneNumber: "+14155559999",
 		Priority:    100, // Highest priority
 		Status:      model.StatusQueued,
@@ -1024,14 +1036,14 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 	}
 	_, _, _ = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{crashedLead})
 
-	// Manually simulate expired lock (> 2 min ago)
-	_, err = pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "crashed-worker-old")
+	// Manually simulate expired lock
+	_, err = pgRepo.ClaimPendingLeads(ctx, campCrash.ID, 1, "crashed-worker-old")
 	if err != nil {
 		t.Fatalf("failed initial claim for crash simulation: %v", err)
 	}
 
 	// Reclaim expired lease with 1ms TTL to simulate recovery of crashed worker
-	reclaimedCount, err := pgRepo.ReclaimExpiredLeases(ctx, camp.ID, 1*time.Millisecond)
+	reclaimedCount, err := pgRepo.ReclaimExpiredLeases(ctx, campCrash.ID, 1*time.Millisecond)
 	if err != nil {
 		t.Fatalf("failed reclaiming expired leases: %v", err)
 	}
@@ -1040,7 +1052,7 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 	}
 
 	// Active worker now claims: must successfully pick up the orphaned lead
-	recovered, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "surviving-worker-new")
+	recovered, err := pgRepo.ClaimPendingLeads(ctx, campCrash.ID, 1, "surviving-worker-new")
 	if err != nil {
 		t.Fatalf("failed claiming recovered lead: %v", err)
 	}
