@@ -321,18 +321,15 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 
 		metrics.DefaultMetrics.IncDNCHit()
 		e.pacer.RecordOutcome(model.StatusFailed)
-		if e.repo != nil {
-			_ = e.repo.UpdateLeadStatus(context.Background(), lead.ID, model.StatusDLQ, lead.FailureReason, nil)
-			_ = e.repo.RecordCallAttempt(context.Background(), &model.CallAttempt{
-				ID:           uuid.NewString(),
-				CampaignID:   e.campaign.ID,
-				LeadID:       lead.ID,
-				PhoneNumber:  lead.PhoneNumber,
-				Status:       model.StatusDLQ,
-				ErrorMessage: "DNC_PROHIBITED",
-				CreatedAt:    time.Now().UTC(),
-			})
-		}
+		e.persistCallOutcome(context.Background(), lead.ID, model.StatusDLQ, lead.FailureReason, nil, &model.CallAttempt{
+			ID:           uuid.NewString(),
+			CampaignID:   e.campaign.ID,
+			LeadID:       lead.ID,
+			PhoneNumber:  lead.PhoneNumber,
+			Status:       model.StatusDLQ,
+			ErrorMessage: "DNC_PROHIBITED",
+			CreatedAt:    time.Now().UTC(),
+		})
 		logger.L.Warn("dial_routed_to_dlq_dnc", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 		return
 	}
@@ -538,6 +535,15 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	lead.Status = status
 	e.mu.Unlock()
 	e.pacer.RecordOutcome(status)
+	e.persistCallOutcome(context.Background(), lead.ID, status, "", nil, &model.CallAttempt{
+		ID:             uuid.NewString(),
+		CampaignID:     e.campaign.ID,
+		LeadID:         lead.ID,
+		PhoneNumber:    lead.PhoneNumber,
+		Status:         status,
+		RingDurationMs: int(ringDuration.Milliseconds()),
+		CreatedAt:      time.Now().UTC(),
+	})
 }
 
 // GetStats returns live statistical progress
