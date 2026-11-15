@@ -16,7 +16,7 @@ import (
 type CampaignRepository interface {
 	SaveCampaign(ctx context.Context, camp *model.Campaign) error
 	GetCampaign(ctx context.Context, id string) (*model.Campaign, error)
-	IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (inserted int, duplicates int, err error)
+	IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (insertedIDs []string, duplicates int, err error)
 	UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error
 	RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error
 	GetDeadLetterQueue(ctx context.Context, campaignID string) ([]*model.Lead, error)
@@ -141,15 +141,16 @@ func (r *PostgresRepository) GetCampaign(ctx context.Context, id string) (*model
 	return camp, nil
 }
 
-// IngestLeadsIdempotent enforces database-level idempotency via ON CONFLICT (campaign_id, phone_number) DO NOTHING
-func (r *PostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (int, int, error) {
+// IngestLeadsIdempotent enforces database-level idempotency via ON CONFLICT (campaign_id, phone_number) DO NOTHING RETURNING id.
+// Only leads actually inserted into PostgreSQL are returned in insertedIDs, serving as authoritative admission list.
+func (r *PostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) ([]string, int, error) {
 	if len(leads) == 0 {
-		return 0, 0, nil
+		return nil, 0, nil
 	}
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -159,9 +160,10 @@ func (r *PostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []
 			status, attempts, max_attempts, failure_reason,
 			created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (campaign_id, phone_number) DO NOTHING;`
+		ON CONFLICT (campaign_id, phone_number) DO NOTHING
+		RETURNING id;`
 
-	inserted := 0
+	var insertedIDs []string
 	duplicates := 0
 
 	for _, l := range leads {
@@ -170,7 +172,8 @@ func (r *PostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []
 			createdAt = time.Now().UTC()
 		}
 
-		tag, err := tx.Exec(ctx, insertQuery,
+		var insertedID string
+		err := tx.QueryRow(ctx, insertQuery,
 			l.ID,
 			l.CampaignID,
 			l.PhoneNumber,
@@ -181,23 +184,22 @@ func (r *PostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []
 			l.MaxAttempts,
 			l.FailureReason,
 			createdAt,
-		)
+		).Scan(&insertedID)
 		if err != nil {
-			return 0, 0, fmt.Errorf("failed inserting lead %s: %w", l.ID, err)
+			if err == pgx.ErrNoRows {
+				duplicates++
+				continue
+			}
+			return nil, 0, fmt.Errorf("failed inserting lead %s: %w", l.ID, err)
 		}
-
-		if tag.RowsAffected() == 1 {
-			inserted++
-		} else {
-			duplicates++
-		}
+		insertedIDs = append(insertedIDs, insertedID)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, fmt.Errorf("failed to commit lead batch: %w", err)
+		return nil, 0, fmt.Errorf("failed to commit lead batch: %w", err)
 	}
 
-	return inserted, duplicates, nil
+	return insertedIDs, duplicates, nil
 }
 
 func (r *PostgresRepository) UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error {
@@ -322,11 +324,11 @@ func (r *MemoryPostgresRepository) GetCampaign(ctx context.Context, id string) (
 	return c, nil
 }
 
-func (r *MemoryPostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (int, int, error) {
+func (r *MemoryPostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) ([]string, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	inserted := 0
+	var insertedIDs []string
 	duplicates := 0
 
 	for _, l := range leads {
@@ -338,10 +340,10 @@ func (r *MemoryPostgresRepository) IngestLeadsIdempotent(ctx context.Context, le
 
 		r.phoneIndex[key] = l.ID
 		r.leads[l.ID] = l
-		inserted++
+		insertedIDs = append(insertedIDs, l.ID)
 	}
 
-	return inserted, duplicates, nil
+	return insertedIDs, duplicates, nil
 }
 
 func (r *MemoryPostgresRepository) UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error {

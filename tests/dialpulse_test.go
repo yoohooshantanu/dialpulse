@@ -425,12 +425,12 @@ func TestStoragePersistenceAndIdempotency(t *testing.T) {
 		{ID: "l3", CampaignID: camp.ID, PhoneNumber: "+14155550222", Priority: 30},
 	}
 
-	inserted, duplicates, err := repo.IngestLeadsIdempotent(ctx, leads)
+	insertedIDs, duplicates, err := repo.IngestLeadsIdempotent(ctx, leads)
 	if err != nil {
 		t.Fatalf("ingest error: %v", err)
 	}
-	if inserted != 2 || duplicates != 1 {
-		t.Errorf("expected 2 inserted, 1 duplicate, got %d, %d", inserted, duplicates)
+	if len(insertedIDs) != 2 || duplicates != 1 {
+		t.Errorf("expected 2 inserted, 1 duplicate, got %d, %d", len(insertedIDs), duplicates)
 	}
 
 	// Update lead to DLQ
@@ -553,8 +553,8 @@ type failingRepo struct {
 	storage.CampaignRepository
 }
 
-func (f *failingRepo) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (int, int, error) {
-	return 0, 0, fmt.Errorf("simulated postgres connection failure / deadlock")
+func (f *failingRepo) IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) ([]string, int, error) {
+	return nil, 0, fmt.Errorf("simulated postgres connection failure / deadlock")
 }
 
 func TestSynchronousIngestRejectsOnStorageFailure(t *testing.T) {
@@ -586,5 +586,61 @@ func TestSynchronousIngestRejectsOnStorageFailure(t *testing.T) {
 	stats := engine.GetStats()
 	if stats.TotalLeads != 0 {
 		t.Errorf("expected 0 leads admitted to queue, got %d", stats.TotalLeads)
+	}
+}
+
+
+func TestDatabaseDuplicateRejectedAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	sharedRepo := storage.NewMemoryPostgresRepository()
+
+	camp := &model.Campaign{
+		ID:              "camp_restart_idempotency",
+		AllocatedAgents: 5,
+	}
+
+	// 1. Initial application run: ingest lead
+	engine1 := queue.NewCampaignEngine(camp, nil, nil, nil)
+	engine1.SetRepository(sharedRepo)
+
+	lead1 := &model.Lead{
+		PhoneNumber: "+1 (212) 555-0999",
+		Priority:    50,
+	}
+	accepted1, dups1, err1 := engine1.IngestLeads(ctx, []*model.Lead{lead1})
+	if err1 != nil || accepted1 != 1 || dups1 != 0 {
+		t.Fatalf("engine1 ingest failed: accepted=%d, dups=%d, err=%v", accepted1, dups1, err1)
+	}
+
+	// 2. Simulate application restart: new engine instance with empty in-memory index, but same DB
+	engine2 := queue.NewCampaignEngine(camp, nil, nil, nil)
+	engine2.SetRepository(sharedRepo)
+
+	lead2 := &model.Lead{
+		PhoneNumber: "12125550999", // Same normalized number
+		Priority:    80,
+	}
+
+	accepted2, dups2, err2 := engine2.IngestLeads(ctx, []*model.Lead{lead2})
+	if err2 != nil {
+		t.Fatalf("unexpected error on engine2 ingest: %v", err2)
+	}
+
+	// The database correctly rejected the duplicate, so engine2 must NOT admit it to the dispatch queue!
+	if accepted2 != 0 {
+		t.Errorf("expected 0 accepted leads in restarted engine, got %d", accepted2)
+	}
+	if dups2 != 1 {
+		t.Errorf("expected 1 duplicate detected by database, got %d", dups2)
+	}
+
+	stats2 := engine2.GetStats()
+	if stats2.TotalLeads != 0 {
+		t.Errorf("expected 0 total leads admitted to restarted engine queue, got %d", stats2.TotalLeads)
+	}
+
+	// Verify lead was never stored in engine2 memory
+	if _, ok := engine2.GetLead(lead2.ID); ok {
+		t.Errorf("duplicate lead must NOT exist in restarted engine memory")
 	}
 }

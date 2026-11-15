@@ -146,6 +146,7 @@ func (e *CampaignEngine) IngestLeads(ctx context.Context, leads []*model.Lead) (
 			l.ID = "lead_" + uuid.NewString()[:8]
 		}
 		l.CampaignID = e.campaign.ID
+		l.PhoneNumber = normPhone
 		l.Status = model.StatusQueued
 		if l.MaxAttempts <= 0 {
 			l.MaxAttempts = 3
@@ -159,18 +160,34 @@ func (e *CampaignEngine) IngestLeads(ctx context.Context, leads []*model.Lead) (
 	}
 
 	// Persist to PostgreSQL synchronously first
+	admittedMap := normMap
 	if e.repo != nil && len(toInsert) > 0 {
-		dbInserted, dbDups, err := e.repo.IngestLeadsIdempotent(ctx, toInsert)
+		insertedIDs, dbDups, err := e.repo.IngestLeadsIdempotent(ctx, toInsert)
 		if err != nil {
 			logger.L.Error("lead_ingest_db_failed", "campaign_id", e.campaign.ID, "error", err)
 			return 0, 0, fmt.Errorf("database transaction failed: %w", err)
 		}
 		duplicates += dbDups
-		_ = dbInserted
+
+		// Authoritative database admission list:
+		// Only admit leads whose IDs were actually inserted into PostgreSQL.
+		// If the application restarted and an existing duplicate was re-submitted,
+		// the database skips it and we DO NOT admit it into the in-memory dispatch queue.
+		admittedMap = make(map[string]*model.Lead)
+		insertedIDSet := make(map[string]bool, len(insertedIDs))
+		for _, id := range insertedIDs {
+			insertedIDSet[id] = true
+		}
+
+		for normPhone, l := range normMap {
+			if insertedIDSet[l.ID] {
+				admittedMap[normPhone] = l
+			}
+		}
 	}
 
 	accepted := 0
-	for normPhone, l := range normMap {
+	for normPhone, l := range admittedMap {
 		e.phoneIndex[normPhone] = l.ID
 		e.leads[l.ID] = l
 		e.pendingQueue = append(e.pendingQueue, l)
