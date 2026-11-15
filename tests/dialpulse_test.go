@@ -231,3 +231,50 @@ func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
 	// 3. Graceful termination drains workers cleanly
 	engine.Stop()
 }
+
+func TestBusyCallRetryBackoff(t *testing.T) {
+	camp := &model.Campaign{
+		ID:              "camp_retry_test",
+		AllocatedAgents: 2,
+	}
+
+	// Mock dialer that always returns Busy
+	busyDialer := &queue.MockTelephonyDialer{
+		HumanAnswerRate: 0.0,
+		VoicemailRate:   0.0,
+		BusyRate:        1.0, // 100% busy
+	}
+
+	engine := queue.NewCampaignEngine(camp, nil, nil, busyDialer)
+
+	lead := &model.Lead{
+		ID:          "lead_busy_retry",
+		PhoneNumber: "2125559876",
+		Priority:    50,
+		MaxAttempts: 3,
+	}
+	engine.IngestLeads([]*model.Lead{lead})
+
+	engine.Start()
+	time.Sleep(120 * time.Millisecond)
+
+	retrieved, ok := engine.GetLead("lead_busy_retry")
+	if !ok {
+		t.Fatalf("expected to find lead")
+	}
+
+	// Must have been attempted once and rescheduled
+	if retrieved.Attempts != 1 {
+		t.Errorf("expected 1 attempt, got %d", retrieved.Attempts)
+	}
+	if retrieved.NextAttemptAt == nil {
+		t.Errorf("expected NextAttemptAt to be populated for retry")
+	} else if !retrieved.NextAttemptAt.After(time.Now().UTC()) {
+		t.Errorf("expected NextAttemptAt to be in the future")
+	}
+	if retrieved.Status != model.StatusQueued {
+		t.Errorf("expected status QUEUED for retry, got %s", retrieved.Status)
+	}
+
+	engine.Stop()
+}

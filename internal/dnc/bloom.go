@@ -77,6 +77,9 @@ func hashPair(data string) (uint64, uint64) {
 
 // Add inserts a phone number into the DNC filter
 func (bf *BloomFilter) Add(phone string) {
+	if bf == nil || bf.numBits == 0 || len(bf.bits) == 0 {
+		return
+	}
 	norm := NormalizeNumber(phone)
 	if len(norm) == 0 {
 		return
@@ -99,6 +102,9 @@ func (bf *BloomFilter) Add(phone string) {
 
 // Contains checks if a phone number exists in the DNC filter
 func (bf *BloomFilter) Contains(phone string) bool {
+	if bf == nil || bf.numBits == 0 || len(bf.bits) == 0 {
+		return false
+	}
 	norm := NormalizeNumber(phone)
 	if len(norm) == 0 {
 		return false

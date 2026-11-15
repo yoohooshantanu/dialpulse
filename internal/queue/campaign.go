@@ -204,7 +204,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 
 	// 1. DNC Screening
 	if e.dncFilter != nil && e.dncFilter.Contains(lead.PhoneNumber) {
+		e.mu.Lock()
 		lead.Status = model.StatusFailed
+		e.mu.Unlock()
 		metrics.DefaultMetrics.IncDNCHit()
 		logger.L.Warn("dial_blocked_dnc", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 		return
@@ -229,29 +231,50 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	defer atomic.AddInt32(&e.activeCalls, -1)
 
 	metrics.DefaultMetrics.IncDial()
+	e.mu.Lock()
 	lead.Status = model.StatusDialing
 	now := time.Now().UTC()
 	lead.LastAttemptAt = &now
 	lead.Attempts++
+	e.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
 	defer cancel()
 
 	status, _, err := e.dialer.Dial(ctx, lead)
 	if err != nil {
+		e.mu.Lock()
 		lead.Status = model.StatusFailed
+		e.mu.Unlock()
 		e.pacer.RecordOutcome(model.StatusFailed)
 		return
 	}
 
+	// 3. Retry with exponential backoff on Busy or No Answer if attempts remain
+	if (status == model.StatusBusy || status == model.StatusNoAnswer) && lead.Attempts < lead.MaxAttempts {
+		retryTime := time.Now().UTC().Add(15 * time.Minute)
+		e.mu.Lock()
+		lead.NextAttemptAt = &retryTime
+		lead.Status = model.StatusQueued
+		e.pendingQueue = append(e.pendingQueue, lead)
+		e.mu.Unlock()
+		e.pacer.RecordOutcome(status)
+		logger.L.Info("lead_retry_scheduled", "lead_id", lead.ID, "attempt", lead.Attempts, "retry_at", retryTime)
+		return
+	}
+
+	e.mu.Lock()
 	lead.Status = status
+	e.mu.Unlock()
 	e.pacer.RecordOutcome(status)
 
 	if status == model.StatusAnswered {
 		// Attempt to allocate idle AI agent
 		if atomic.AddInt32(&e.idleAgents, -1) >= 0 {
 			// Successfully connected
+			e.mu.Lock()
 			lead.Status = model.StatusConnected
+			e.mu.Unlock()
 			metrics.DefaultMetrics.IncConnect()
 			logger.L.Info("call_connected", "lead_id", lead.ID, "campaign_id", e.campaign.ID)
 
@@ -264,7 +287,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		} else {
 			// No agent was available when customer answered -> Abandoned Call!
 			atomic.AddInt32(&e.idleAgents, 1)
+			e.mu.Lock()
 			lead.Status = model.StatusAbandoned
+			e.mu.Unlock()
 			metrics.DefaultMetrics.IncAbandon()
 			e.pacer.RecordOutcome(model.StatusAbandoned)
 			logger.L.Warn("call_abandoned", "lead_id", lead.ID, "campaign_id", e.campaign.ID)
@@ -286,12 +311,15 @@ func (e *CampaignEngine) GetStats() *model.CampaignStats {
 	return stats
 }
 
-// GetLead retrieves an individual lead's state
-func (e *CampaignEngine) GetLead(leadID string) (*model.Lead, bool) {
+// GetLead retrieves a point-in-time copy of an individual lead's state
+func (e *CampaignEngine) GetLead(leadID string) (model.Lead, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	lead, ok := e.leads[leadID]
-	return lead, ok
+	if !ok {
+		return model.Lead{}, false
+	}
+	return *lead, true
 }
 
 // Stop gracefully terminates campaign execution and drains active workers
