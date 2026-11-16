@@ -933,3 +933,199 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 		t.Fatalf("expected unpublished event %s to NEVER be deleted, exists=%v", idOldUnpublished, unpubExists)
 	}
 }
+
+// 10. DLQ publish fails on 3rd delivery -> message is redelivered and lands in DLQ once available
+func TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ(t *testing.T) {
+	dbURL := getTestDatabaseURL(t)
+	natsURL := getTestNATSURL(t)
+	ctx := context.Background()
+
+	repo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to Postgres: %v", err)
+	}
+	defer repo.Close()
+
+	streamName := "STREAM_DLQ_RETRY_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
+	subjectPrefix := "dialpulse.events.dlqretry." + streamName
+	nc, js := setupTestJetStream(t, natsURL, streamName, subjectPrefix+".>", 2*time.Minute)
+
+	dlqSubject := "dialpulse.dlq.lead"
+	dlqSub, err := nc.SubscribeSync(dlqSubject)
+	if err != nil {
+		t.Fatalf("failed subscribing to DLQ subject: %v", err)
+	}
+	defer dlqSub.Unsubscribe()
+
+	eventID := "evt_dlq_retry_" + uuid.New().String()
+	subject := subjectPrefix + ".lead.retry_test"
+	msg := nats.NewMsg(subject)
+	msg.Header.Set("Nats-Msg-Id", eventID)
+	msg.Header.Set("x-aggregate-type", "lead")
+	msg.Data = []byte(`{"poison": true}`)
+
+	if _, err := js.PublishMsg(msg); err != nil {
+		t.Fatalf("failed publishing poison message: %v", err)
+	}
+
+	consumer := queue.NewOutboxConsumer(repo.Pool(), js, &FailingHandler{}, queue.OutboxConsumerConfig{
+		ConsumerName:     "dlq_retry_consumer",
+		StreamName:       streamName,
+		DLQSubjectPrefix: "dialpulse.dlq",
+		MaxDeliveries:    3,
+		BaseBackoff:      5 * time.Millisecond,
+	})
+
+	// JetStream consumer configured with MaxDeliver(-1) (unlimited) so the application
+	// enforces delivery thresholds and can retry routing to DLQ upon broker errors.
+	sub, err := js.PullSubscribe(subjectPrefix+".>", "dlq_retry_durable", nats.MaxDeliver(-1))
+	if err != nil {
+		t.Fatalf("pull subscribe failed: %v", err)
+	}
+
+	// Delivery 1: handler fails, consumer NAKs
+	msgs1, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+	if err != nil || len(msgs1) == 0 {
+		t.Fatalf("fetch 1 failed: %v", err)
+	}
+	if err := consumer.ProcessMessage(ctx, msgs1[0]); err == nil {
+		t.Fatalf("expected handler error on delivery 1")
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	// Delivery 2: handler fails, consumer NAKs
+	msgs2, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+	if err != nil || len(msgs2) == 0 {
+		t.Fatalf("fetch 2 failed: %v", err)
+	}
+	if err := consumer.ProcessMessage(ctx, msgs2[0]); err == nil {
+		t.Fatalf("expected handler error on delivery 2")
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	// Delivery 3: handler fails; poison routing to DLQ is attempted, but DLQ publisher FAILS
+	consumer.SetDLQPublisherForTest(func(m *nats.Msg) (*nats.PubAck, error) {
+		return nil, errors.New("simulated DLQ publisher outage")
+	})
+
+	msgs3, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+	if err != nil || len(msgs3) == 0 {
+		t.Fatalf("fetch 3 failed: %v", err)
+	}
+	dlqErr := consumer.ProcessMessage(ctx, msgs3[0])
+	if dlqErr == nil || !strings.Contains(dlqErr.Error(), "simulated DLQ publisher outage") {
+		t.Fatalf("expected DLQ outage error on delivery 3, got: %v", dlqErr)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	// DLQ publisher recovers
+	consumer.SetDLQPublisherForTest(nil)
+
+	// Delivery 4: message is redelivered (not dropped because MaxDeliver is unlimited)!
+	// DLQ publish now succeeds and message is acknowledged.
+	msgs4, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+	if err != nil || len(msgs4) == 0 {
+		t.Fatalf("fetch 4 failed: expected redelivery after DLQ failure: %v", err)
+	}
+	if err := consumer.ProcessMessage(ctx, msgs4[0]); err != nil {
+		t.Fatalf("expected success routing to restored DLQ on delivery 4, got: %v", err)
+	}
+
+	// Verify message landed in DLQ
+	dlqMsg, err := dlqSub.NextMsg(3 * time.Second)
+	if err != nil {
+		t.Fatalf("expected message in DLQ after recovery, got error: %v", err)
+	}
+	if dlqMsg.Header.Get("x-original-event-id") != eventID {
+		t.Fatalf("expected DLQ x-original-event-id == %s, got %s", eventID, dlqMsg.Header.Get("x-original-event-id"))
+	}
+	if dlqMsg.Header.Get("x-delivery-count") != "4" {
+		t.Fatalf("expected DLQ delivery count == 4, got %s", dlqMsg.Header.Get("x-delivery-count"))
+	}
+
+	// Verify stream is now empty (message ACK'd, not retried further)
+	extraMsgs, _ := sub.Fetch(1, nats.MaxWait(300*time.Millisecond))
+	if len(extraMsgs) > 0 {
+		t.Fatalf("expected message to be acknowledged and terminated, but received extra redelivery")
+	}
+}
+
+// 11. Malformed messages (missing Nats-Msg-Id): publish to the DLQ with reason header and terminate without retry
+func TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry(t *testing.T) {
+	dbURL := getTestDatabaseURL(t)
+	natsURL := getTestNATSURL(t)
+	ctx := context.Background()
+
+	repo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to Postgres: %v", err)
+	}
+	defer repo.Close()
+
+	streamName := "STREAM_MALFORMED_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
+	subjectPrefix := "dialpulse.events.malformed." + streamName
+	nc, js := setupTestJetStream(t, natsURL, streamName, subjectPrefix+".>", 2*time.Minute)
+
+	dlqSubject := "dialpulse.dlq.malformed"
+	dlqSub, err := nc.SubscribeSync(dlqSubject)
+	if err != nil {
+		t.Fatalf("failed subscribing to DLQ subject: %v", err)
+	}
+	defer dlqSub.Unsubscribe()
+
+	// Publish message WITHOUT Nats-Msg-Id header
+	subject := subjectPrefix + ".malformed.item"
+	rawPayload := []byte(`{"raw":"corrupt_payload_missing_id"}`)
+	msg := nats.NewMsg(subject)
+	msg.Header.Set("x-aggregate-type", "malformed")
+	msg.Data = rawPayload
+
+	if _, err := js.PublishMsg(msg); err != nil {
+		t.Fatalf("failed publishing malformed message: %v", err)
+	}
+
+	consumer := queue.NewOutboxConsumer(repo.Pool(), js, &FailingHandler{}, queue.OutboxConsumerConfig{
+		ConsumerName:     "malformed_consumer",
+		StreamName:       streamName,
+		DLQSubjectPrefix: "dialpulse.dlq",
+		MaxDeliveries:    3,
+		BaseBackoff:      5 * time.Millisecond,
+	})
+
+	sub, err := js.PullSubscribe(subjectPrefix+".>", "malformed_durable", nats.MaxDeliver(-1))
+	if err != nil {
+		t.Fatalf("pull subscribe failed: %v", err)
+	}
+
+	msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+	if err != nil || len(msgs) == 0 {
+		t.Fatalf("failed fetching malformed message: %v", err)
+	}
+
+	// ProcessMessage should identify missing Nats-Msg-Id, route immediately to DLQ with ID from sequence, and terminate (Ack)
+	if err := consumer.ProcessMessage(ctx, msgs[0]); err != nil {
+		t.Fatalf("expected ProcessMessage to successfully handle and route malformed message, got: %v", err)
+	}
+
+	// Verify message arrived on DLQ
+	dlqMsg, err := dlqSub.NextMsg(3 * time.Second)
+	if err != nil {
+		t.Fatalf("expected malformed message to land in DLQ %s, got: %v", dlqSubject, err)
+	}
+
+	if dlqMsg.Header.Get("x-dead-letter-reason") != "malformed_missing_id" {
+		t.Fatalf("expected x-dead-letter-reason == malformed_missing_id, got %q", dlqMsg.Header.Get("x-dead-letter-reason"))
+	}
+	if !strings.HasPrefix(dlqMsg.Header.Get("Nats-Msg-Id"), "malformed-seq-") {
+		t.Fatalf("expected Nats-Msg-Id to start with malformed-seq-, got %q", dlqMsg.Header.Get("Nats-Msg-Id"))
+	}
+	if string(dlqMsg.Data) != string(rawPayload) {
+		t.Fatalf("expected DLQ payload to preserve original data, got %s", string(dlqMsg.Data))
+	}
+
+	// Verify original message is acknowledged and NOT retried
+	extraMsgs, _ := sub.Fetch(1, nats.MaxWait(300*time.Millisecond))
+	if len(extraMsgs) > 0 {
+		t.Fatalf("expected malformed message to terminate without retry, but received another message")
+	}
+}

@@ -96,11 +96,12 @@ type OutboxConsumer struct {
 	handler ConsumerTxHandler
 	cfg     OutboxConsumerConfig
 
-	sub    *nats.Subscription
-	stopCh chan struct{}
-	wg     sync.WaitGroup
-	mu     sync.Mutex
-	closed bool
+	dlqPublisher func(msg *nats.Msg) (*nats.PubAck, error)
+	sub          *nats.Subscription
+	stopCh       chan struct{}
+	wg           sync.WaitGroup
+	mu           sync.Mutex
+	closed       bool
 }
 
 func NewOutboxConsumer(pool *pgxpool.Pool, js nats.JetStreamContext, handler ConsumerTxHandler, cfg OutboxConsumerConfig) *OutboxConsumer {
@@ -132,6 +133,23 @@ func NewOutboxConsumer(pool *pgxpool.Pool, js nats.JetStreamContext, handler Con
 	}
 }
 
+// SetDLQPublisherForTest allows injecting a faulty DLQ publisher to test DLQ failure & redelivery resilience
+func (c *OutboxConsumer) SetDLQPublisherForTest(pub func(msg *nats.Msg) (*nats.PubAck, error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dlqPublisher = pub
+}
+
+func (c *OutboxConsumer) publishDLQ(msg *nats.Msg) (*nats.PubAck, error) {
+	c.mu.Lock()
+	pub := c.dlqPublisher
+	c.mu.Unlock()
+	if pub != nil {
+		return pub(msg)
+	}
+	return c.js.PublishMsg(msg)
+}
+
 // ProcessMessage processes a single NATS message with atomic idempotency and DLQ routing.
 func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) error {
 	meta, err := msg.Metadata()
@@ -141,8 +159,27 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 
 	eventID := msg.Header.Get("Nats-Msg-Id")
 	if eventID == "" {
-		_ = msg.NakWithDelay(c.cfg.BaseBackoff)
-		return fmt.Errorf("outbox_consumer: missing Nats-Msg-Id header on incoming message")
+		// Malformed message missing Nats-Msg-Id: route to DLQ with ID derived from stream sequence and terminate without retry
+		aggType := msg.Header.Get("x-aggregate-type")
+		if aggType == "" {
+			aggType = "malformed"
+		}
+		dlqSubject := fmt.Sprintf("%s.%s", c.cfg.DLQSubjectPrefix, aggType)
+		dlqMsg := nats.NewMsg(dlqSubject)
+		dlqID := fmt.Sprintf("malformed-seq-%d", meta.Sequence.Stream)
+		dlqMsg.Header.Set("Nats-Msg-Id", dlqID)
+		dlqMsg.Header.Set("x-stream-sequence", fmt.Sprintf("%d", meta.Sequence.Stream))
+		dlqMsg.Header.Set("x-dead-letter-reason", "malformed_missing_id")
+		dlqMsg.Header.Set("x-dlq-reason", "missing_nats_msg_id")
+		dlqMsg.Data = msg.Data
+
+		if _, pubErr := c.publishDLQ(dlqMsg); pubErr != nil {
+			_ = msg.NakWithDelay(c.cfg.BaseBackoff)
+			return fmt.Errorf("outbox_consumer: failed routing malformed message to DLQ: %w", pubErr)
+		}
+
+		_ = msg.Ack()
+		return nil
 	}
 
 	event := model.OutboxEvent{
@@ -198,10 +235,11 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 			dlqMsg.Header.Set("Nats-Msg-Id", fmt.Sprintf("dlq_%s", event.ID))
 			dlqMsg.Header.Set("x-original-event-id", event.ID)
 			dlqMsg.Header.Set("x-dlq-error", handlerErr.Error())
+			dlqMsg.Header.Set("x-dead-letter-reason", "max_deliveries_exceeded")
 			dlqMsg.Header.Set("x-delivery-count", fmt.Sprintf("%d", meta.NumDelivered))
 			dlqMsg.Data = msg.Data
 
-			if _, pubErr := c.js.PublishMsg(dlqMsg); pubErr != nil {
+			if _, pubErr := c.publishDLQ(dlqMsg); pubErr != nil {
 				_ = msg.NakWithDelay(c.cfg.BaseBackoff)
 				return fmt.Errorf("outbox_consumer: failed routing poison message to DLQ: %w", pubErr)
 			}
@@ -232,12 +270,14 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 }
 
 // StartPullConsumer initializes a durable pull subscription and continuously processes batches.
+// JetStream broker-side MaxDeliver is set to unlimited (-1) so the application exclusively enforces
+// delivery thresholds and can retry routing to DLQ if the DLQ broker is temporarily unavailable.
 func (c *OutboxConsumer) StartPullConsumer(ctx context.Context) error {
 	sub, err := c.js.PullSubscribe(
 		c.cfg.SubjectFilter,
 		c.cfg.ConsumerName,
 		nats.AckWait(c.cfg.AckWait),
-		nats.MaxDeliver(c.cfg.MaxDeliveries),
+		nats.MaxDeliver(-1),
 	)
 	if err != nil {
 		return fmt.Errorf("outbox_consumer: failed creating pull subscription: %w", err)
