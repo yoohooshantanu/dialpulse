@@ -73,7 +73,10 @@
    - Bitset Bloom filter using Kirsch-Mitzenmacher double-hashing (FNV-1a).
    - Screens phone numbers in **~520 nanoseconds** with zero disk I/O and $<0.01\%$ false-positive probability.
 5. **Time-Zone & Regulatory Curfew Governor**:
-   - Inspects North American area codes (NPA) to localize recipient time zones across Eastern, Central, Mountain, Pacific, Alaska, and Hawaii.
+   - Inspects North American area codes (NPA) to localize recipient time zones across Eastern, Central, Mountain, Pacific, Alaska, Hawaii, and Arizona.
+   - **Arizona Non-DST Compliance**: Maps Arizona area codes (`602`, `480`, `623`, `928`) to `America/Phoenix` (UTC-7 year-round). Unlike Denver (MDT, UTC-6), Arizona does not observe Daylight Saving Time; in summer, 14:30 UTC is 08:30 MDT (permitted) but 07:30 MST in Phoenix (prohibited). DialPulse strictly prevents dangerous off-hours calls in Arizona.
+   - **El Paso Approximation**: Area code `915` (El Paso, TX) is correctly mapped to Mountain Time (`America/Denver`), diverging from the remainder of Texas (Central Time). Note: NPA area-code routing is an industry-standard heuristic subject to mobile number portability (MNP) where subscribers relocate while retaining their numbers. Production deployments can augment NPA tables with carrier-level LERG/HLR dipping.
+   - **Fail-Closed Unknown Area Codes**: Unrecognized area codes fail closed returning `model.ErrUnknownTimezone`, immediately routing the lead to `DEAD_LETTER_QUEUE` (`unknown_timezone`) rather than guessing or retrying indefinitely.
    - Strictly enforces the federal 08:00 AM – 09:00 PM permissible telemarketing window, holding off off-hours leads with future-dated retry timestamps without CPU busy-spinning.
 6. **PostgreSQL Persistence & Distributed Work Queue Layer (`pgx/v5`)**:
    - Production SQL schema ([`migrations/001_init.sql`](migrations/001_init.sql)) covering `campaigns`, `leads` (with `locked_by` / `locked_at`), and `call_attempts`.

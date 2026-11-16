@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -513,6 +514,34 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	// 2. Timezone / Curfew Screening
 	if e.tzGovernor != nil {
 		if err := e.tzGovernor.CanCall(lead.PhoneNumber); err != nil {
+			if errors.Is(err, model.ErrUnknownTimezone) {
+				// Fail closed on unknown timezone: route directly to DLQ without infinite retry
+				metrics.DefaultMetrics.IncTimezoneBlock()
+				logger.L.Warn("dial_routed_to_dlq_unknown_timezone", "lead_id", lead.ID, "phone", lead.PhoneNumber)
+
+				e.mu.Lock()
+				lead.Status = model.StatusDLQ
+				lead.FailureReason = "unknown_timezone"
+				lead.LockedBy = ""
+				lead.LockedAt = nil
+				lead.NextAttemptAt = nil
+				e.dlq = append(e.dlq, lead)
+				e.mu.Unlock()
+
+				e.pacer.RecordOutcome(model.StatusFailed)
+				e.persistCallOutcome(context.Background(), lead.ID, model.StatusDLQ, "unknown_timezone", nil, &model.CallAttempt{
+					ID:           uuid.NewString(),
+					CampaignID:   e.campaign.ID,
+					LeadID:       lead.ID,
+					PhoneNumber:  lead.PhoneNumber,
+					Status:       model.StatusDLQ,
+					ErrorMessage: "unknown_timezone",
+					CreatedAt:    time.Now().UTC(),
+				}, lead.Attempts, lead.LeaseToken)
+				return
+			}
+
+			// Curfew restriction: defer lead until next permissible morning window (08:00 AM local)
 			metrics.DefaultMetrics.IncTimezoneBlock()
 			logger.L.Debug("dial_blocked_curfew", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 			nextPermissible := e.tzGovernor.NextPermissibleCallTime(lead.PhoneNumber)

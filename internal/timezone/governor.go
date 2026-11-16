@@ -18,6 +18,7 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 	central, _ := time.LoadLocation("America/Chicago")
 	mountain, _ := time.LoadLocation("America/Denver")
 	pacific, _ := time.LoadLocation("America/Los_Angeles")
+	phoenix, _ := time.LoadLocation("America/Phoenix")
 	alaska, _ := time.LoadLocation("America/Anchorage")
 	hawaii, _ := time.LoadLocation("Pacific/Honolulu")
 
@@ -34,6 +35,9 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 	if pacific == nil {
 		pacific = time.FixedZone("PST", -8*3600)
 	}
+	if phoenix == nil {
+		phoenix = time.FixedZone("MST", -7*3600) // Arizona does not observe DST; remains UTC-7
+	}
 	if alaska == nil {
 		alaska = time.FixedZone("AKST", -9*3600)
 	}
@@ -48,8 +52,10 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 		// Central
 		"312": central, "773": central, "847": central, "214": central, "713": central,
 		"615": central, "314": central, "612": central, "504": central,
-		// Mountain
-		"303": mountain, "720": mountain, "602": mountain, "480": mountain, "801": mountain,
+		// Mountain (Denver observes DST)
+		"303": mountain, "720": mountain, "801": mountain, "915": mountain,
+		// Arizona (America/Phoenix does NOT observe DST; UTC-7 year-round)
+		"602": phoenix, "480": phoenix, "623": phoenix, "928": phoenix,
 		// Pacific
 		"206": pacific, "415": pacific, "650": pacific, "310": pacific, "213": pacific,
 		"503": pacific, "858": pacific, "702": pacific,
@@ -59,7 +65,7 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 
 	return &TimezoneGovernor{
 		areaCodeZones: tzMap,
-		defaultLoc:    eastern,
+		defaultLoc:    nil, // Fail closed: unrecognized area codes return model.ErrUnknownTimezone
 	}
 }
 
@@ -82,7 +88,7 @@ func (g *TimezoneGovernor) CanCall(phone string, now ...time.Time) error {
 	areaCode := ExtractAreaCode(phone)
 	loc, ok := g.areaCodeZones[areaCode]
 	if !ok {
-		loc = g.defaultLoc
+		return model.ErrUnknownTimezone
 	}
 
 	localTime := currentTime.In(loc)
@@ -101,7 +107,7 @@ func (g *TimezoneGovernor) GetRecipientTime(phone string) time.Time {
 	areaCode := ExtractAreaCode(phone)
 	loc, ok := g.areaCodeZones[areaCode]
 	if !ok {
-		loc = g.defaultLoc
+		return time.Time{}
 	}
 	return time.Now().In(loc)
 }
@@ -116,7 +122,7 @@ func (g *TimezoneGovernor) NextPermissibleCallTime(phone string, now ...time.Tim
 	areaCode := ExtractAreaCode(phone)
 	loc, ok := g.areaCodeZones[areaCode]
 	if !ok {
-		loc = g.defaultLoc
+		return time.Time{}
 	}
 
 	localTime := currentTime.In(loc)

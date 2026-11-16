@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -407,7 +408,7 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 	}
 
 	if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || lockedAt == nil {
-		return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, got 0 affected rows", leadID)
+		return fmt.Errorf("%w: reschedule_lead: stale lease token or invalid lead state for %s, got 0 affected rows", model.ErrStaleLease, leadID)
 	}
 
 	// Step 2: Reschedule lead under exclusive lock, evaluating lease expiry dynamically via clock_timestamp() inside the UPDATE
@@ -428,7 +429,7 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 		return err
 	}
 	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, got %d affected rows", leadID, tag.RowsAffected())
+		return fmt.Errorf("%w: reschedule_lead: stale lease token or invalid lead state for %s, got %d affected rows", model.ErrStaleLease, leadID, tag.RowsAffected())
 	}
 
 	return tx.Commit(ctx)
@@ -555,7 +556,7 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 	}
 
 	if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || lockedAt == nil {
-		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got 0", leadID)
+		return fmt.Errorf("%w: record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got 0", model.ErrStaleLease, leadID)
 	}
 
 	// Step 2: Under the held row lock, execute conditional UPDATE evaluating clock_timestamp() at statement execution time
@@ -574,7 +575,7 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		return fmt.Errorf("failed updating lead attempts in start tx: %w", err)
 	}
 	if tag1.RowsAffected() != 1 {
-		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got %d", leadID, tag1.RowsAffected())
+		return fmt.Errorf("%w: record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got %d", model.ErrStaleLease, leadID, tag1.RowsAffected())
 	}
 
 	// Step 3: Insert the IN_PROGRESS attempt record
@@ -634,7 +635,7 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 			}
 
 			if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || lockedAt == nil {
-				return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, got 0 affected rows", leadID)
+				return fmt.Errorf("%w: record_call_outcome_tx: stale lease token or invalid lead state for %s, got 0 affected rows", model.ErrStaleLease, leadID)
 			}
 
 			// Step 2: Conditional UPDATE under the held row lock, evaluating clock_timestamp() at statement execution time
@@ -658,7 +659,7 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 				return fmt.Errorf("failed updating lead status in tx: %w", err)
 			}
 			if tag.RowsAffected() != 1 {
-				return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, got %d affected rows", leadID, tag.RowsAffected())
+				return fmt.Errorf("%w: record_call_outcome_tx: stale lease token or invalid lead state for %s, got %d affected rows", model.ErrStaleLease, leadID, tag.RowsAffected())
 			}
 
 			if attempt != nil {
@@ -697,7 +698,7 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 		if err == nil {
 			return nil
 		}
-		if strings.Contains(err.Error(), "stale lease token") {
+		if errors.Is(err, model.ErrStaleLease) || strings.Contains(err.Error(), "stale lease token") {
 			return err
 		}
 		lastErr = err

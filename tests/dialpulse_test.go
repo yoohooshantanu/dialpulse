@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -19,6 +20,21 @@ import (
 	"github.com/yoohooshantanu/dialpulse/internal/storage"
 	"github.com/yoohooshantanu/dialpulse/internal/timezone"
 )
+
+func getTestDatabaseURL(t *testing.T) string {
+	t.Helper()
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		if os.Getenv("REQUIRE_DB") == "1" {
+			t.Fatalf("REQUIRE_DB=1 but TEST_DATABASE_URL is not set")
+		}
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+	return dbURL
+}
 
 func TestDNCBloomFilter(t *testing.T) {
 	bf := dnc.NewBloomFilter(10000, 0.001)
@@ -664,13 +680,7 @@ func TestDatabaseDuplicateRejectedAfterRestart(t *testing.T) {
 
 
 func TestLivePostgresRestartIdempotency(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -963,13 +973,7 @@ func TestTickDistributedClaimingIntegration(t *testing.T) {
 }
 
 func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -1120,10 +1124,7 @@ func (d *callbackDialer) Dial(ctx context.Context, lead *model.Lead) (model.Call
 }
 
 func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -1237,13 +1238,7 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 }
 
 func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -1336,13 +1331,7 @@ func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
 }
 
 func TestLivePostgresDurableAttemptStartPersistenceCrashSafety(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -1767,13 +1756,7 @@ func TestRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 }
 
 func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -1837,13 +1820,7 @@ func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 // 5. Stale Worker A calls RecordCallOutcomeTx() with leaseToken A -> REJECTED.
 // 6. Active Worker B calls RecordCallOutcomeTx() with leaseToken B -> SUCCEEDS.
 func TestLivePostgresDistributedLeaseFencingStaleWorkerRejected(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -2060,13 +2037,7 @@ func TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
 // TestLivePostgresRescheduleLeadFencing verifies that RescheduleLead strictly requires a valid non-empty
 // lease token and rejects stale tokens with zero rows affected.
 func TestLivePostgresRescheduleLeadFencing(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -2161,13 +2132,7 @@ func TestLivePostgresRescheduleLeadFencing(t *testing.T) {
 // 6. Active Worker B's engine dispatches lead with Token B: attempt-start and outcome succeed.
 // 7. In PostgreSQL: verify final status is CONNECTED with 1 attempt.
 func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -2351,13 +2316,7 @@ func TestMemoryAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing.T) {
 // If Worker A's process pauses > 2 minutes and Worker B has NOT reclaimed the row, Worker A's RecordAttemptStart
 // MUST FAIL with zero affected rows, preventing Worker A from initiating dialing on an expired lease.
 func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -2469,13 +2428,7 @@ func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing
 // Even when Tx 1 holds the lock without modifying the row and releases it after the lease expires, Worker A's
 // blocked RecordAttemptStart MUST be rejected upon acquiring the lock, inserting 0 attempts and incrementing 0 attempts.
 func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = os.Getenv("DATABASE_URL")
-	}
-	if dbURL == "" {
-		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
-	}
+	dbURL := getTestDatabaseURL(t)
 
 	ctx := context.Background()
 	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
@@ -2615,4 +2568,594 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 	if attemptCount != 0 {
 		t.Fatalf("expected 0 call_attempts inserted for lock-wait expired attempt-start, got %d", attemptCount)
 	}
+}
+
+// TestTCPACurfewTableDriven tests TCPA calling window enforcement across timezones, DST shifts, and state exceptions.
+func TestTCPACurfewTableDriven(t *testing.T) {
+	gov := timezone.NewTimezoneGovernor()
+
+	parseUTC := func(s string) time.Time {
+		tm, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatalf("failed parsing test time %s: %v", s, err)
+		}
+		return tm
+	}
+
+	tests := []struct {
+		name        string
+		phone       string
+		instant     time.Time
+		expectErr   error
+		description string
+	}{
+		// Arizona non-DST tests (Mountain Standard Time UTC-7 year-round)
+		// At 2026-06-15 14:30:00Z: Denver (MDT, UTC-6) is 08:30 AM (allowed).
+		// Phoenix (MST, UTC-7) is 07:30 AM (dangerous / prohibited before 08:00 AM local).
+		{
+			name:        "Arizona 602 summer morning dangerous direction (07:30 Phoenix)",
+			phone:       "+1 (602) 555-0100",
+			instant:     parseUTC("2026-06-15T14:30:00Z"),
+			expectErr:   model.ErrTimezoneRestricted,
+			description: "Phoenix is 07:30 AM; calling before 08:00 AM local violates TCPA even though Denver is 08:30 AM",
+		},
+		{
+			name:        "Arizona 480 summer morning dangerous direction (07:30 Phoenix)",
+			phone:       "+1 (480) 555-0100",
+			instant:     parseUTC("2026-06-15T14:30:00Z"),
+			expectErr:   model.ErrTimezoneRestricted,
+			description: "Phoenix 480 is 07:30 AM; prohibited before 08:00 AM",
+		},
+		{
+			name:        "Arizona 623 summer morning dangerous direction (07:30 Phoenix)",
+			phone:       "+1 (623) 555-0100",
+			instant:     parseUTC("2026-06-15T14:30:00Z"),
+			expectErr:   model.ErrTimezoneRestricted,
+			description: "Phoenix 623 is 07:30 AM; prohibited before 08:00 AM",
+		},
+		{
+			name:        "Arizona 928 summer morning dangerous direction (07:30 Phoenix)",
+			phone:       "+1 (928) 555-0100",
+			instant:     parseUTC("2026-06-15T14:30:00Z"),
+			expectErr:   model.ErrTimezoneRestricted,
+			description: "Arizona 928 is 07:30 AM; prohibited before 08:00 AM",
+		},
+		// Arizona evening test
+		// At 2026-06-16 03:30:00Z: Denver (MDT, UTC-6) is 21:30 (9:30 PM, prohibited).
+		// Phoenix (MST, UTC-7) is 20:30 (8:30 PM, allowed before 21:00).
+		{
+			name:        "Arizona 602 summer evening allowed (20:30 Phoenix vs 21:30 Denver)",
+			phone:       "+1 (602) 555-0100",
+			instant:     parseUTC("2026-06-16T03:30:00Z"),
+			expectErr:   nil,
+			description: "Phoenix is 20:30 (8:30 PM, allowed), whereas Denver is 21:30 (prohibited)",
+		},
+		// Unknown area codes fail-closed with ErrUnknownTimezone
+		{
+			name:        "Unknown area code 999 fails closed",
+			phone:       "+1 (999) 555-0100",
+			instant:     parseUTC("2026-06-15T15:00:00Z"),
+			expectErr:   model.ErrUnknownTimezone,
+			description: "Unrecognized area codes must fail closed with ErrUnknownTimezone, not default to Eastern",
+		},
+		{
+			name:        "Unknown area code 000 fails closed",
+			phone:       "+1 (000) 555-0100",
+			instant:     parseUTC("2026-06-15T15:00:00Z"),
+			expectErr:   model.ErrUnknownTimezone,
+			description: "Invalid area code must fail closed with ErrUnknownTimezone",
+		},
+		// 915 El Paso (Mountain Time approximation)
+		{
+			name:        "El Paso 915 morning allowed (08:30 MDT)",
+			phone:       "+1 (915) 555-0100",
+			instant:     parseUTC("2026-06-15T14:30:00Z"),
+			expectErr:   nil,
+			description: "El Paso 915 is Mountain Time; 14:30 UTC = 08:30 MDT (allowed)",
+		},
+		{
+			name:        "El Paso 915 early morning prohibited (07:30 MDT)",
+			phone:       "+1 (915) 555-0100",
+			instant:     parseUTC("2026-06-15T13:30:00Z"),
+			expectErr:   model.ErrTimezoneRestricted,
+			description: "El Paso 915 is Mountain Time; 13:30 UTC = 07:30 MDT (prohibited)",
+		},
+		// Exact DST transition boundary instants for Area Code 212 (New York, Eastern)
+		{
+			name:        "NY 212 standard time before spring forward (07:00 EST)",
+			phone:       "+1 (212) 555-0100",
+			instant:     parseUTC("2026-03-07T12:00:00Z"),
+			expectErr:   model.ErrTimezoneRestricted,
+			description: "EST is UTC-5; 12:00 UTC = 07:00 EST (prohibited)",
+		},
+		{
+			name:        "NY 212 daylight saving time after spring forward (08:00 EDT)",
+			phone:       "+1 (212) 555-0100",
+			instant:     parseUTC("2026-03-08T12:00:00Z"),
+			expectErr:   nil,
+			description: "EDT is UTC-4; 12:00 UTC = 08:00 EDT (allowed)",
+		},
+		{
+			name:        "NY 212 daylight saving time before fall back (08:00 EDT)",
+			phone:       "+1 (212) 555-0100",
+			instant:     parseUTC("2026-10-31T12:00:00Z"),
+			expectErr:   nil,
+			description: "EDT is UTC-4; 12:00 UTC = 08:00 EDT (allowed)",
+		},
+		{
+			name:        "NY 212 standard time after fall back (07:00 EST)",
+			phone:       "+1 (212) 555-0100",
+			instant:     parseUTC("2026-11-01T12:00:00Z"),
+			expectErr:   model.ErrTimezoneRestricted,
+			description: "EST is UTC-5; 12:00 UTC = 07:00 EST (prohibited)",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			err := gov.CanCall(tc.phone, tc.instant)
+			if tc.expectErr == nil {
+				if err != nil {
+					t.Fatalf("expected call to be allowed, got error %v (%s)", err, tc.description)
+				}
+			} else {
+				if !errors.Is(err, tc.expectErr) {
+					t.Fatalf("expected error %v, got %v (%s)", tc.expectErr, err, tc.description)
+				}
+			}
+		})
+	}
+}
+
+// TestQueueHandlesUnknownAreaCodeDLQ verifies that leads with unknown area codes fail closed into DLQ without infinite retry loops
+func TestQueueHandlesUnknownAreaCodeDLQ(t *testing.T) {
+	camp := &model.Campaign{
+		ID:                "camp_unknown_tz_test",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+	}
+
+	tzGov := timezone.NewTimezoneGovernor()
+	engine := queue.NewCampaignEngine(camp, nil, tzGov, nil)
+
+	lead := &model.Lead{
+		ID:          "lead_unknown_tz_1",
+		PhoneNumber: "+1 (999) 555-0199",
+		Priority:    100,
+	}
+
+	accepted, _, err := engine.IngestLeads(context.Background(), []*model.Lead{lead})
+	if err != nil || accepted != 1 {
+		t.Fatalf("failed ingesting lead: accepted=%d, err=%v", accepted, err)
+	}
+
+	engine.DispatchLeadDirect(lead)
+
+	// Lead must be transitioned to DLQ
+	leadInfo, ok := engine.GetLead(lead.ID)
+	if !ok {
+		t.Fatalf("lead not found in engine index")
+	}
+	if leadInfo.Status != model.StatusDLQ {
+		t.Fatalf("expected lead status %s, got %s", model.StatusDLQ, leadInfo.Status)
+	}
+	if leadInfo.FailureReason != "unknown_timezone" && leadInfo.FailureReason != "UNKNOWN_TIMEZONE" {
+		t.Fatalf("expected failure reason 'unknown_timezone', got '%s'", leadInfo.FailureReason)
+	}
+
+	// Must be found in engine DLQ slice
+	dlq := engine.GetDLQ()
+	foundInDLQ := false
+	for _, l := range dlq {
+		if l.ID == lead.ID {
+			foundInDLQ = true
+			break
+		}
+	}
+	if !foundInDLQ {
+		t.Fatalf("expected lead %s to be present in engine DLQ", lead.ID)
+	}
+
+	// Lead must NOT have been rescheduled to a future NextAttemptAt or re-queued
+	if leadInfo.NextAttemptAt != nil {
+		t.Fatalf("expected lead NextAttemptAt to be nil (unserviceable), but got %v", *leadInfo.NextAttemptAt)
+	}
+}
+
+// TestLivePostgresConcurrentWorkersNeverClaimSameLead verifies that concurrent workers never double-claim leads under high load.
+func TestLivePostgresConcurrentWorkersNeverClaimSameLead(t *testing.T) {
+	dbURL := getTestDatabaseURL(t)
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	campID := "camp_concurrent_claim_" + uuid.NewString()[:8]
+	camp := &model.Campaign{
+		ID:                campID,
+		Name:              "Concurrent Claim Test",
+		AllocatedAgents:   10,
+		TargetAbandonRate: 0.025,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	const totalLeads = 100
+	leads := make([]*model.Lead, totalLeads)
+	for i := 0; i < totalLeads; i++ {
+		leads[i] = &model.Lead{
+			ID:          fmt.Sprintf("lead_%s_%03d", campID, i),
+			CampaignID:  campID,
+			PhoneNumber: fmt.Sprintf("+1415555%04d", i),
+			Priority:    10 + (i % 50),
+			Status:      model.StatusQueued,
+		}
+	}
+
+	insertedIDs, dups, err := pgRepo.IngestLeadsIdempotent(ctx, leads)
+	if err != nil || len(insertedIDs) != totalLeads || dups != 0 {
+		t.Fatalf("ingest failed: inserted=%d, dups=%d, err=%v", len(insertedIDs), dups, err)
+	}
+
+	const numWorkers = 10
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	claimedMap := make(map[string]string) // leadID -> workerID
+	totalClaimed := 0
+
+	for w := 0; w < numWorkers; w++ {
+		workerID := fmt.Sprintf("worker-%d-%s", w, uuid.NewString()[:4])
+		wg.Add(1)
+		go func(wid string) {
+			defer wg.Done()
+			for {
+				claimCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				claimed, err := pgRepo.ClaimPendingLeads(claimCtx, campID, 5, wid)
+				cancel()
+				if err != nil {
+					t.Errorf("worker %s error claiming leads: %v", wid, err)
+					return
+				}
+				if len(claimed) == 0 {
+					return
+				}
+				mu.Lock()
+				for _, l := range claimed {
+					if prevWorker, exists := claimedMap[l.ID]; exists {
+						t.Errorf("DOUBLE CLAIM COLLISION: lead %s was claimed by %s and subsequently by %s", l.ID, prevWorker, wid)
+					}
+					claimedMap[l.ID] = wid
+					totalClaimed++
+				}
+				mu.Unlock()
+			}
+		}(workerID)
+	}
+	wg.Wait()
+
+	if totalClaimed != totalLeads {
+		t.Fatalf("expected %d total claimed leads, got %d", totalLeads, totalClaimed)
+	}
+	if len(claimedMap) != totalLeads {
+		t.Fatalf("expected %d unique claimed leads, got %d", totalLeads, len(claimedMap))
+	}
+
+	// Direct DB Verification 1: No QUEUED leads remain in database
+	var queuedCount int
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM leads WHERE campaign_id = $1 AND status = 'QUEUED'", campID).Scan(&queuedCount)
+	if err != nil {
+		t.Fatalf("failed querying queued count: %v", err)
+	}
+	if queuedCount != 0 {
+		t.Fatalf("expected 0 QUEUED leads remaining in DB, found %d", queuedCount)
+	}
+
+	// Direct DB Verification 2: Each lead's locked_by in DB matches the exact claiming worker
+	rows, err := pgRepo.Pool().Query(ctx, "SELECT id, status, locked_by FROM leads WHERE campaign_id = $1", campID)
+	if err != nil {
+		t.Fatalf("failed querying lead statuses: %v", err)
+	}
+	defer rows.Close()
+
+	checkedCount := 0
+	for rows.Next() {
+		var id, status string
+		var lockedBy *string
+		if err := rows.Scan(&id, &status, &lockedBy); err != nil {
+			t.Fatalf("failed scanning lead row: %v", err)
+		}
+		if status != "DIALING" {
+			t.Fatalf("lead %s status expected DIALING, got %s", id, status)
+		}
+		if lockedBy == nil {
+			t.Fatalf("lead %s locked_by is nil in database", id)
+		}
+		expectedWorker, ok := claimedMap[id]
+		if !ok {
+			t.Fatalf("lead %s found in DB was never claimed in in-memory tracking", id)
+		}
+		if *lockedBy != expectedWorker {
+			t.Fatalf("lead %s locked_by mismatch in DB: expected %s, got %s", id, expectedWorker, *lockedBy)
+		}
+		checkedCount++
+	}
+	if checkedCount != totalLeads {
+		t.Fatalf("expected %d verified leads in DB, got %d", totalLeads, checkedCount)
+	}
+}
+
+// TestLivePostgresStaleWorkerOutcomeRejection tests lease fencing rejection under expiry, reassignment, and lock-wait race.
+func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
+	dbURL := getTestDatabaseURL(t)
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	campID := "camp_lease_fence_" + uuid.NewString()[:8]
+	camp := &model.Campaign{
+		ID:                campID,
+		Name:              "Lease Fencing Test",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	// Subcase 1: Expired-not-reassigned:
+	// Worker A claims lead; locked_at is set into the past (>2m ago) without reassignment.
+	// RecordCallOutcomeTx must be rejected with sentinel model.ErrStaleLease and 0 call_attempts inserted.
+	t.Run("ExpiredNotReassigned", func(t *testing.T) {
+		leadID := "lead_fence_exp_" + uuid.NewString()[:8]
+		lead := &model.Lead{
+			ID:          leadID,
+			CampaignID:  campID,
+			PhoneNumber: "+14155550201",
+			Priority:    10,
+			Status:      model.StatusQueued,
+		}
+		if _, _, err := pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead}); err != nil {
+			t.Fatalf("ingest failed: %v", err)
+		}
+
+		claimed, err := pgRepo.ClaimPendingLeads(ctx, campID, 1, "worker-A")
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("claim failed: claimed=%d, err=%v", len(claimed), err)
+		}
+		claimedLead := claimed[0]
+
+		// Expire the lease in PostgreSQL by setting locked_at to 5 minutes ago WITHOUT altering lease_token
+		_, err = pgRepo.Pool().Exec(ctx, `
+			UPDATE leads
+			SET locked_at = clock_timestamp() - interval '5 minutes'
+			WHERE id = $1;
+		`, claimedLead.ID)
+		if err != nil {
+			t.Fatalf("failed updating locked_at to past: %v", err)
+		}
+
+		attemptID := uuid.NewString()
+		attempt := &model.CallAttempt{
+			ID:             attemptID,
+			CampaignID:     campID,
+			LeadID:         claimedLead.ID,
+			PhoneNumber:    claimedLead.PhoneNumber,
+			Status:         model.StatusConnected,
+			RingDurationMs: 150,
+			TalkDurationMs: 3000,
+			CreatedAt:      time.Now().UTC(),
+		}
+
+		outcomeErr := pgRepo.RecordCallOutcomeTx(ctx, claimedLead.ID, model.StatusConnected, "", nil, attempt, 1, claimedLead.LeaseToken)
+		if outcomeErr == nil {
+			t.Fatalf("expected RecordCallOutcomeTx to fail due to expired lease, but succeeded!")
+		}
+		if !errors.Is(outcomeErr, model.ErrStaleLease) {
+			t.Fatalf("expected error wrapping model.ErrStaleLease, got: %v", outcomeErr)
+		}
+
+		// Assert no call_attempts row was inserted
+		var attemptCount int
+		err = pgRepo.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM call_attempts WHERE id = $1", attemptID).Scan(&attemptCount)
+		if err != nil {
+			t.Fatalf("failed querying call_attempts: %v", err)
+		}
+		if attemptCount != 0 {
+			t.Fatalf("expected 0 call_attempts rows, got %d", attemptCount)
+		}
+	})
+
+	// Subcase 2: Reassigned to another worker:
+	// Worker A claims lead; lease expires and Worker B reclaims it (acquiring a new lease token).
+	// Worker A's outcome mutation with Token A must be rejected with sentinel model.ErrStaleLease.
+	t.Run("ReassignedToAnotherWorker", func(t *testing.T) {
+		leadID := "lead_fence_reassign_" + uuid.NewString()[:8]
+		lead := &model.Lead{
+			ID:          leadID,
+			CampaignID:  campID,
+			PhoneNumber: "+14155550202",
+			Priority:    10,
+			Status:      model.StatusQueued,
+		}
+		if _, _, err := pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead}); err != nil {
+			t.Fatalf("ingest failed: %v", err)
+		}
+
+		claimedA, err := pgRepo.ClaimPendingLeads(ctx, campID, 1, "worker-A")
+		if err != nil || len(claimedA) != 1 {
+			t.Fatalf("worker A claim failed: %v", err)
+		}
+		tokenA := claimedA[0].LeaseToken
+
+		// Expire lease in PostgreSQL
+		_, err = pgRepo.Pool().Exec(ctx, `
+			UPDATE leads
+			SET locked_at = clock_timestamp() - interval '5 minutes'
+			WHERE id = $1;
+		`, leadID)
+		if err != nil {
+			t.Fatalf("failed updating locked_at to past: %v", err)
+		}
+
+		// Worker B claims the expired lead, acquiring a new lease token
+		claimedB, err := pgRepo.ClaimPendingLeads(ctx, campID, 1, "worker-B")
+		if err != nil || len(claimedB) != 1 {
+			t.Fatalf("worker B reclaim failed: %v", err)
+		}
+		tokenB := claimedB[0].LeaseToken
+		if tokenA == tokenB {
+			t.Fatalf("expected newly generated token for Worker B, got identical tokens")
+		}
+
+		// Worker A attempts outcome with stale Token A
+		attemptID := uuid.NewString()
+		attempt := &model.CallAttempt{
+			ID:             attemptID,
+			CampaignID:     campID,
+			LeadID:         leadID,
+			PhoneNumber:    claimedA[0].PhoneNumber,
+			Status:         model.StatusConnected,
+			CreatedAt:      time.Now().UTC(),
+		}
+
+		outcomeErr := pgRepo.RecordCallOutcomeTx(ctx, leadID, model.StatusConnected, "", nil, attempt, 1, tokenA)
+		if outcomeErr == nil {
+			t.Fatalf("expected RecordCallOutcomeTx to fail for reassigned lead, but succeeded!")
+		}
+		if !errors.Is(outcomeErr, model.ErrStaleLease) {
+			t.Fatalf("expected error wrapping model.ErrStaleLease, got: %v", outcomeErr)
+		}
+
+		// Assert no call_attempts row was inserted by Worker A
+		var attemptCount int
+		err = pgRepo.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM call_attempts WHERE id = $1", attemptID).Scan(&attemptCount)
+		if err != nil {
+			t.Fatalf("failed querying call_attempts: %v", err)
+		}
+		if attemptCount != 0 {
+			t.Fatalf("expected 0 call_attempts rows, got %d", attemptCount)
+		}
+	})
+
+	// Subcase 3: Lock-Wait Race:
+	// Blocker Tx holds row lock (FOR UPDATE). Worker A calls RecordCallOutcomeTx and blocks.
+	// We verify Worker A is blocked using pg_stat_activity.
+	// While Worker A is waiting, Blocker Tx sets locked_at into past WITHOUT altering lease_token, then commits.
+	// Worker A unblocks and must fail with model.ErrStaleLease and 0 call_attempts rows inserted.
+	t.Run("LockWaitRace", func(t *testing.T) {
+		leadID := "lead_fence_lockwait_" + uuid.NewString()[:8]
+		lead := &model.Lead{
+			ID:          leadID,
+			CampaignID:  campID,
+			PhoneNumber: "+14155550203",
+			Priority:    10,
+			Status:      model.StatusQueued,
+		}
+		if _, _, err := pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead}); err != nil {
+			t.Fatalf("ingest failed: %v", err)
+		}
+
+		claimed, err := pgRepo.ClaimPendingLeads(ctx, campID, 1, "worker-A")
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("claim failed: %v", err)
+		}
+		leadItem := claimed[0]
+
+		// 1. Blocker transaction begins and acquires exclusive row lock on the lead
+		blockerTx, err := pgRepo.Pool().Begin(ctx)
+		if err != nil {
+			t.Fatalf("failed starting blocker tx: %v", err)
+		}
+		defer blockerTx.Rollback(ctx)
+
+		var lockedStatus string
+		err = blockerTx.QueryRow(ctx, "SELECT status FROM leads WHERE id = $1 FOR UPDATE", leadID).Scan(&lockedStatus)
+		if err != nil {
+			t.Fatalf("blocker tx failed acquiring row lock: %v", err)
+		}
+
+		// 2. Worker A executes RecordCallOutcomeTx in a background goroutine, which blocks waiting for the row lock
+		attemptID := uuid.NewString()
+		attempt := &model.CallAttempt{
+			ID:             attemptID,
+			CampaignID:     campID,
+			LeadID:         leadID,
+			PhoneNumber:    leadItem.PhoneNumber,
+			Status:         model.StatusConnected,
+			CreatedAt:      time.Now().UTC(),
+		}
+
+		outcomeDone := make(chan error, 1)
+		go func() {
+			err := pgRepo.RecordCallOutcomeTx(context.Background(), leadID, model.StatusConnected, "", nil, attempt, 1, leadItem.LeaseToken)
+			outcomeDone <- err
+		}()
+
+		// 3. Verify via pg_stat_activity that Worker A is actively blocked waiting on the lock
+		waitingOnLock := false
+		for poll := 0; poll < 50; poll++ {
+			var waitEventType, waitEvent *string
+			qErr := pgRepo.Pool().QueryRow(ctx, `
+				SELECT wait_event_type, wait_event
+				FROM pg_stat_activity
+				WHERE query LIKE '%leads%FOR UPDATE%'
+				  AND pid != pg_backend_pid()
+				  AND state = 'active'
+				LIMIT 1;
+			`).Scan(&waitEventType, &waitEvent)
+			if qErr == nil && waitEventType != nil && *waitEventType == "Lock" {
+				waitingOnLock = true
+				break
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		if !waitingOnLock {
+			t.Fatalf("timed out waiting for pg_stat_activity to report wait_event_type = 'Lock' for Worker A")
+		}
+
+		// 4. While Worker A is waiting, blockerTx updates locked_at to 5 minutes ago WITHOUT changing lease_token
+		_, err = blockerTx.Exec(ctx, `
+			UPDATE leads
+			SET locked_at = clock_timestamp() - interval '5 minutes'
+			WHERE id = $1;
+		`, leadID)
+		if err != nil {
+			t.Fatalf("failed setting locked_at into past in blocker tx: %v", err)
+		}
+
+		// 5. BlockerTx commits, releasing the lock to Worker A
+		if err := blockerTx.Commit(ctx); err != nil {
+			t.Fatalf("failed committing blocker tx: %v", err)
+		}
+
+		// 6. Worker A unblocks, rechecks lease validity at execution time, and must fail with model.ErrStaleLease
+		select {
+		case outcomeErr := <-outcomeDone:
+			if outcomeErr == nil {
+				t.Fatalf("expected RecordCallOutcomeTx to fail due to lock-wait lease expiry, but succeeded!")
+			}
+			if !errors.Is(outcomeErr, model.ErrStaleLease) {
+				t.Fatalf("expected error wrapping model.ErrStaleLease, got: %v", outcomeErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for Worker A RecordCallOutcomeTx to unblock after lock release")
+		}
+
+		// 7. Verify no call_attempts row was inserted
+		var attemptCount int
+		err = pgRepo.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM call_attempts WHERE id = $1", attemptID).Scan(&attemptCount)
+		if err != nil {
+			t.Fatalf("failed querying call_attempts: %v", err)
+		}
+		if attemptCount != 0 {
+			t.Fatalf("expected 0 call_attempts rows, got %d", attemptCount)
+		}
+	})
 }

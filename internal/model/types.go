@@ -11,6 +11,8 @@ var (
 	ErrCampaignNotRunning    = errors.New("campaign is not in running state")
 	ErrDNCViolation          = errors.New("phone number is listed in Do-Not-Call registry")
 	ErrTimezoneRestricted    = errors.New("recipient local time is outside permitted dialing window (08:00 - 21:00)")
+	ErrUnknownTimezone       = errors.New("unknown recipient area code: local timezone cannot be determined")
+	ErrStaleLease            = errors.New("stale lease token or invalid lead state: outcome rejected")
 	ErrInvalidCampaignConfig = errors.New("invalid campaign configuration")
 )
 
