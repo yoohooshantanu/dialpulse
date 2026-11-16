@@ -68,7 +68,7 @@ jobs:
         run: |
           while IFS= read -r line; do
             echo "::error title=TestFailure::$line"
-          done < <(grep -E "(--- FAIL|FAIL:|panic:)" test.log || true)
+          done < <(grep -A 5 -E "^(--- FAIL:|    outbox_test\.go:)" test.log || true)
 
       - name: Build Server Binary
         run: go build -v -o bin/dialpulse ./cmd/server

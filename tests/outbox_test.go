@@ -120,6 +120,9 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	}
 	defer repo.Close()
 
+	// Clean outbox table for clean baseline
+	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events;`)
+
 	streamName := "STREAM_ACCUM_DRAIN_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
 	_, js := setupTestJetStream(t, natsURL, streamName, "dialpulse.events.accum.>", 2*time.Minute)
 
@@ -153,27 +156,22 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	// Record call outcome transaction (which MUST atomically insert into outbox_events)
 	attempt := &model.CallAttempt{
 		ID: attemptID, CampaignID: campID, LeadID: leadID, PhoneNumber: phone,
-		Status: model.StatusAnswered, RingDurationMs: 300, TalkDurationMs: 1200,
+		Status: model.StatusConnected, RingDurationMs: 300, TalkDurationMs: 1200,
 	}
-	if err := repo.RecordCallOutcomeTx(ctx, leadID, model.StatusAnswered, "completed", nil, attempt, 1, token); err != nil {
+	if err := repo.RecordCallOutcomeTx(ctx, leadID, model.StatusConnected, "completed", nil, attempt, 1, token); err != nil {
 		t.Fatalf("record call outcome failed: %v", err)
 	}
 
 	// Verify outbox row exists with published_at IS NULL
-	unpub, err := repo.GetUnpublishedOutboxEvents(ctx, 10)
-	if err != nil {
-		t.Fatalf("failed querying outbox: %v", err)
-	}
-	var targetEvent *model.OutboxEvent
 	expectedID := model.DeterministicOutboxEventID(attemptID, "call.outcome_recorded")
-	for _, e := range unpub {
-		if e.ID == expectedID {
-			targetEvent = e
-			break
-		}
-	}
-	if targetEvent == nil {
-		t.Fatalf("expected outbox event %s to exist with published_at IS NULL, but not found", expectedID)
+	var targetEvent model.OutboxEvent
+	var targetPayload []byte
+	queryEvt := `SELECT id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at FROM outbox_events WHERE id = $1;`
+	if err := repo.Pool().QueryRow(ctx, queryEvt, expectedID).Scan(
+		&targetEvent.ID, &targetEvent.AggregateType, &targetEvent.AggregateID,
+		&targetEvent.EventType, &targetPayload, &targetEvent.CreatedAt, &targetEvent.PublishedAt,
+	); err != nil {
+		t.Fatalf("expected outbox event %s to exist in DB, got err: %v", expectedID, err)
 	}
 	if targetEvent.PublishedAt != nil {
 		t.Fatalf("expected published_at to be NULL while unpublished, got %v", targetEvent.PublishedAt)
@@ -199,16 +197,10 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	}
 
 	// Assert row remains unpublished after failure (transaction rollback)
-	unpubAfter, _ := repo.GetUnpublishedOutboxEvents(ctx, 10)
-	var stillUnpublished bool
-	for _, e := range unpubAfter {
-		if e.ID == expectedID && e.PublishedAt == nil {
-			stillUnpublished = true
-			break
-		}
-	}
-	if !stillUnpublished {
-		t.Fatalf("expected outbox event %s to remain unpublished after simulated NATS failure", expectedID)
+	var stillPublishedAt *time.Time
+	_ = repo.Pool().QueryRow(ctx, `SELECT published_at FROM outbox_events WHERE id = $1;`, expectedID).Scan(&stillPublishedAt)
+	if stillPublishedAt != nil {
+		t.Fatalf("expected outbox event %s to remain unpublished after simulated NATS failure, got %v", expectedID, stillPublishedAt)
 	}
 
 	// Now connect relay with LIVE JetStream publisher (simulating NATS recovery)

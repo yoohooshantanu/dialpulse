@@ -158,7 +158,13 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 		event.ID = eventID
 	}
 	if event.AggregateType == "" {
-		event.AggregateType = "lead"
+		event.AggregateType = msg.Header.Get("x-aggregate-type")
+		if event.AggregateType == "" {
+			event.AggregateType = "lead"
+		}
+	}
+	if len(event.Payload) == 0 {
+		event.Payload = msg.Data
 	}
 
 	// Step 1: Open a single database transaction for idempotency record + handler mutation
