@@ -137,8 +137,9 @@
      - Computed at scrape time directly against PostgreSQL:
        $$\text{OutboxLag} = \text{EXTRACT}\left(\text{EPOCH FROM } (\text{clock\_timestamp}() - \min(\text{created\_at}))\right) \quad \text{WHERE published\_at IS NULL}$$
      - Because it is evaluated independently of the relay's internal loop, the metric accurately reflects true backlog age and continues to grow monotonically if the relay process stalls or NATS becomes unavailable.
-   - **Retention & Bounded Purging**:
-     - `PurgePublishedOutboxEvents(ctx, olderThan, limit)` removes published records older than the retention threshold, bounding table size without locking the active tail of unpublished rows.
+   - **Retention & Table Growth Pruning**:
+     - **`outbox_events` Pruning**: `PurgePublishedOutboxEvents(ctx, olderThan, limit)` removes published records older than the specified retention threshold (e.g. 1 hour or 24 hours), bounding table size and disk usage without holding locks on the active tail of unpublished rows. In production, this can be triggered by a background maintenance worker or scheduled cron task.
+     - **`processed_events` Growth & Retention Horizon**: Because the consumer writes an idempotency key `(event_id, consumer_name)` for every processed event, the `processed_events` ledger grows monotonically over the life of the platform. Left unmanaged, this introduces table bloat and index overhead. Production deployments should enforce a sliding retention horizon (e.g., pruning keys older than 7 or 30 days) that strictly exceeds the maximum possible transport redelivery, retry, or dead-letter horizon. Once an event is older than the maximum retry window, duplicate deliveries will never arrive, making key deletion safe.
 
 ---
 
