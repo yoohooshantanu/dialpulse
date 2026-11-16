@@ -300,11 +300,13 @@ func (e *CampaignEngine) tick() {
 	// dynamically claim pending leads directly from PostgreSQL via SELECT FOR UPDATE SKIP LOCKED.
 	// This coordinates seamlessly across multiple running server instances with zero collision or double dialing.
 	if repo != nil {
-		claimCtx, claimCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		claimCtx, claimCancel := context.WithTimeout(e.ctx, 5*time.Second)
 		claimed, err := repo.ClaimPendingLeads(claimCtx, campaignID, netDialsNeeded, workerID)
 		claimCancel()
 		if err != nil {
-			logger.L.Error("failed_claiming_distributed_leads_in_tick", "campaign_id", campaignID, "error", err)
+			if e.ctx.Err() == nil {
+				logger.L.Error("failed_claiming_distributed_leads_in_tick", "campaign_id", campaignID, "error", err)
+			}
 		} else {
 			eligible = claimed
 		}
@@ -419,7 +421,26 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		isDNC = true
 	} else if e.repo != nil {
 		prohibited, err := e.repo.IsDNCProhibited(context.Background(), lead.PhoneNumber)
-		if err == nil && prohibited {
+		if err != nil {
+			// Fail-closed on database error: NEVER dial when DNC status cannot be verified!
+			metrics.DefaultMetrics.IncStorageErrors()
+			logger.L.Error("dnc_check_failed_deferring_lead_fail_closed", "lead_id", lead.ID, "phone", lead.PhoneNumber, "error", err)
+
+			// Defer lead with short backoff (e.g. 1 minute) to re-verify compliance later without burning an attempt
+			retryTime := time.Now().UTC().Add(1 * time.Minute)
+			e.mu.Lock()
+			lead.NextAttemptAt = &retryTime
+			lead.Status = model.StatusQueued
+			lead.LockedBy = ""
+			lead.LockedAt = nil
+			e.pendingQueue = append(e.pendingQueue, lead)
+			e.mu.Unlock()
+
+			// Safely release row in PostgreSQL
+			_ = e.repo.RescheduleLead(context.Background(), lead.ID, retryTime)
+			return
+		}
+		if prohibited {
 			isDNC = true
 			if e.dncFilter != nil {
 				e.dncFilter.Add(lead.PhoneNumber)
@@ -491,7 +512,22 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	if e.repo != nil {
 		if err := e.repo.RecordAttemptStart(context.Background(), lead.ID, attemptID, currentAttempts); err != nil {
 			metrics.DefaultMetrics.IncStorageErrors()
-			logger.L.Error("failed_recording_attempt_start", "lead_id", lead.ID, "attempt_id", attemptID, "error", err)
+			logger.L.Error("failed_recording_attempt_start_aborting_dial", "lead_id", lead.ID, "attempt_id", attemptID, "error", err)
+
+			// Abort dial: revert in-memory attempt increment and reschedule safely
+			e.mu.Lock()
+			lead.Attempts--
+			retryTime := time.Now().UTC().Add(30 * time.Second)
+			lead.NextAttemptAt = &retryTime
+			lead.Status = model.StatusQueued
+			lead.LockedBy = ""
+			lead.LockedAt = nil
+			e.pendingQueue = append(e.pendingQueue, lead)
+			e.mu.Unlock()
+
+			// Safely release row lock in PostgreSQL
+			_ = e.repo.RescheduleLead(context.Background(), lead.ID, retryTime)
+			return
 		}
 	}
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yoohooshantanu/dialpulse/internal/dnc"
 	"github.com/yoohooshantanu/dialpulse/internal/logger"
 	"github.com/yoohooshantanu/dialpulse/internal/model"
 )
@@ -624,7 +625,8 @@ func (r *PostgresRepository) GetDeadLetterQueue(ctx context.Context, campaignID 
 	return dlq, nil
 }
 
-// AddDNCNumbers persistently saves phone numbers into the PostgreSQL dnc_numbers table
+// AddDNCNumbers persistently saves phone numbers into the PostgreSQL dnc_numbers table,
+// normalizing every number to canonical digits format before insertion.
 func (r *PostgresRepository) AddDNCNumbers(ctx context.Context, numbers []string) error {
 	if len(numbers) == 0 {
 		return nil
@@ -637,8 +639,12 @@ func (r *PostgresRepository) AddDNCNumbers(ctx context.Context, numbers []string
 
 	query := `INSERT INTO dnc_numbers (phone_number) VALUES ($1) ON CONFLICT (phone_number) DO NOTHING;`
 	for _, num := range numbers {
-		if _, err := tx.Exec(ctx, query, num); err != nil {
-			return fmt.Errorf("failed inserting dnc number %s: %w", num, err)
+		norm := dnc.NormalizeNumber(num)
+		if norm == "" {
+			norm = num
+		}
+		if _, err := tx.Exec(ctx, query, norm); err != nil {
+			return fmt.Errorf("failed inserting dnc number %s: %w", norm, err)
 		}
 	}
 	return tx.Commit(ctx)
@@ -663,11 +669,16 @@ func (r *PostgresRepository) GetDNCNumbers(ctx context.Context) ([]string, error
 	return result, nil
 }
 
-// IsDNCProhibited checks directly against the authoritative dnc_numbers PostgreSQL table
+// IsDNCProhibited checks directly against the authoritative dnc_numbers PostgreSQL table,
+// canonicalizing the queried number so formatting variances never cause missed DNC hits.
 func (r *PostgresRepository) IsDNCProhibited(ctx context.Context, phone string) (bool, error) {
+	norm := dnc.NormalizeNumber(phone)
+	if norm == "" {
+		norm = phone
+	}
 	var exists bool
 	query := `SELECT EXISTS(SELECT 1 FROM dnc_numbers WHERE phone_number = $1);`
-	err := r.pool.QueryRow(ctx, query, phone).Scan(&exists)
+	err := r.pool.QueryRow(ctx, query, norm).Scan(&exists)
 	return exists, err
 }
 
@@ -956,7 +967,11 @@ func (r *MemoryPostgresRepository) AddDNCNumbers(ctx context.Context, numbers []
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, n := range numbers {
-		r.dncNumbers[n] = true
+		norm := dnc.NormalizeNumber(n)
+		if norm == "" {
+			norm = n
+		}
+		r.dncNumbers[norm] = true
 	}
 	return nil
 }
@@ -972,9 +987,13 @@ func (r *MemoryPostgresRepository) GetDNCNumbers(ctx context.Context) ([]string,
 }
 
 func (r *MemoryPostgresRepository) IsDNCProhibited(ctx context.Context, phone string) (bool, error) {
+	norm := dnc.NormalizeNumber(phone)
+	if norm == "" {
+		norm = phone
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.dncNumbers[phone], nil
+	return r.dncNumbers[norm], nil
 }
 
 func (r *MemoryPostgresRepository) GetDeadLetterQueue(ctx context.Context, campaignID string) ([]*model.Lead, error) {

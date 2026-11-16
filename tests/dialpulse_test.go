@@ -1236,22 +1236,34 @@ func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
 	}
 	defer pgRepo.Close()
 
-	dncNumber := fmt.Sprintf("+1800555%04d", rand.Intn(10000))
-	// 1. Instance 1 adds number to PostgreSQL DNC registry
-	if err := pgRepo.AddDNCNumbers(ctx, []string{dncNumber}); err != nil {
+	// 1. Instance 1 registers formatted US number with spaces, parens, and country code
+	formattedDNC := fmt.Sprintf("+1 (800) 555-%04d", rand.Intn(10000))
+	if err := pgRepo.AddDNCNumbers(ctx, []string{formattedDNC}); err != nil {
 		t.Fatalf("failed adding DNC number to live postgres: %v", err)
 	}
 
-	// 2. Instance 2 directly checks via repository without prior restart or bloom pre-population
-	prohibited, err := pgRepo.IsDNCProhibited(ctx, dncNumber)
-	if err != nil {
-		t.Fatalf("failed querying DNC status: %v", err)
+	// Canonical 10-digit number
+	normDNC := dnc.NormalizeNumber(formattedDNC)
+
+	// 2. Cross-Instance Normalization Verification:
+	// Both raw formatted, stripped E.164 (+1800...), and local 10-digit formats MUST match in PostgreSQL!
+	testQueries := []string{
+		formattedDNC,
+		"+1" + normDNC,
+		normDNC,
+		fmt.Sprintf("1%s", normDNC),
 	}
-	if !prohibited {
-		t.Errorf("expected number %s to be prohibited across instances via live postgres", dncNumber)
+	for _, q := range testQueries {
+		prohibited, err := pgRepo.IsDNCProhibited(ctx, q)
+		if err != nil {
+			t.Fatalf("failed querying DNC status for query %q: %v", q, err)
+		}
+		if !prohibited {
+			t.Errorf("expected query %q to be prohibited across instances via live postgres normalization", q)
+		}
 	}
 
-	// 3. Instance 2 engine without bloom filter screening must drop lead to DLQ
+	// 3. Instance 2 engine without bloom filter screening must drop normalized lead to DLQ
 	camp := &model.Campaign{
 		ID:              "camp_dnc_cross_" + uuid.NewString()[:8],
 		AllocatedAgents: 5,
@@ -1273,7 +1285,7 @@ func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
 	lead := &model.Lead{
 		ID:          "lead_dnc_cross",
 		CampaignID:  camp.ID,
-		PhoneNumber: dncNumber,
+		PhoneNumber: normDNC, // Using stripped 10-digit format as ingested by engine
 		Priority:    100,
 		Status:      model.StatusQueued,
 		CreatedAt:   time.Now().UTC(),
@@ -1307,62 +1319,222 @@ func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
 	}
 }
 
-func TestDurableAttemptStartPersistenceCrashSafety(t *testing.T) {
-	repo := storage.NewMemoryPostgresRepository()
+func TestLivePostgresDurableAttemptStartPersistenceCrashSafety(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
 	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
 
 	camp := &model.Campaign{
-		ID:              "camp_crash_safety",
+		ID:              "camp_live_crash_" + uuid.NewString()[:8],
 		AllocatedAgents: 5,
 		Status:          model.CampaignRunning,
 	}
-	_ = repo.SaveCampaign(ctx, camp)
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
 
 	lead := &model.Lead{
-		ID:          "lead_crash_safety_1",
+		ID:          "lead_live_crash_1",
 		CampaignID:  camp.ID,
-		PhoneNumber: "+14155557777",
+		PhoneNumber: fmt.Sprintf("+1415555%04d", rand.Intn(10000)),
 		Priority:    50,
 		Attempts:    0,
 		MaxAttempts: 3,
 		Status:      model.StatusQueued,
 		CreatedAt:   time.Now().UTC(),
 	}
-	_, _, err := repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
 	if err != nil {
 		t.Fatalf("failed ingesting lead: %v", err)
 	}
 
-	// Dial starts: RecordAttemptStart writes attempts=1 and IN_PROGRESS attempt record
+	// 1. Worker reserves lead
+	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-1")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming lead: %v", err)
+	}
+
+	// 2. Prior to carrier dial, RecordAttemptStart writes attempts=1 and IN_PROGRESS attempt record durably to PostgreSQL
 	attemptID := uuid.NewString()
-	err = repo.RecordAttemptStart(ctx, lead.ID, attemptID, 1)
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1)
 	if err != nil {
-		t.Fatalf("failed recording attempt start: %v", err)
+		t.Fatalf("failed recording attempt start on live postgres: %v", err)
 	}
 
-	// Verify durability before carrier returns: attempts count must already be 1 in storage
-	activeLeads, err := repo.GetActiveLeads(ctx, camp.ID)
+	// 3. Verify durability in PostgreSQL before carrier returns: attempts count must already be 1
+	var dbAttempts int
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT attempts FROM leads WHERE id = $1", lead.ID).Scan(&dbAttempts)
 	if err != nil {
-		t.Fatalf("failed querying active leads: %v", err)
+		t.Fatalf("failed querying lead attempts from live postgres: %v", err)
 	}
-	if len(activeLeads) != 1 || activeLeads[0].Attempts != 1 {
-		t.Fatalf("expected attempts=1 durably preserved in storage before dial completion, got %v", activeLeads[0].Attempts)
+	if dbAttempts != 1 {
+		t.Fatalf("expected attempts=1 durably preserved in live postgres before dial completion, got %d", dbAttempts)
 	}
 
-	// Now complete normally with RecordCallOutcomeTx
-	outcomeAttempt := &model.CallAttempt{
-		ID:             attemptID,
-		CampaignID:     camp.ID,
-		LeadID:         lead.ID,
-		PhoneNumber:    lead.PhoneNumber,
-		Status:         model.StatusConnected,
-		RingDurationMs: 50,
-		TalkDurationMs: 2000,
-		CreatedAt:      time.Now().UTC(),
-	}
-	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "NORMAL_CLEARING", nil, outcomeAttempt, 1)
+	var attemptStatus string
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT status FROM call_attempts WHERE id = $1", attemptID).Scan(&attemptStatus)
 	if err != nil {
-		t.Fatalf("failed recording call outcome tx: %v", err)
+		t.Fatalf("failed querying attempt status: %v", err)
+	}
+	if attemptStatus != "IN_PROGRESS" {
+		t.Fatalf("expected call_attempts status IN_PROGRESS, got %s", attemptStatus)
+	}
+
+	// 4. Simulate process crash during dial (carrier never returns, instance abruptly dies)
+	// Backdate lock to simulate expired lease
+	_, err = pgRepo.Pool().Exec(ctx, "UPDATE leads SET locked_at = NOW() - INTERVAL '5 minutes' WHERE id = $1", lead.ID)
+	if err != nil {
+		t.Fatalf("failed backdating lock: %v", err)
+	}
+
+	// 5. Surviving worker instance reclaims expired lease
+	reclaimed, err := pgRepo.ReclaimExpiredLeases(ctx, camp.ID, 2*time.Minute)
+	if err != nil || reclaimed != 1 {
+		t.Fatalf("failed reclaiming expired lease: %v, reclaimed=%d", err, reclaimed)
+	}
+
+	// 6. Next worker claims lead: attempts must remain 1 (cannot be evaded by crashing)
+	reclaimedLeads, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-2")
+	if err != nil || len(reclaimedLeads) != 1 {
+		t.Fatalf("failed claiming recovered lead: %v", err)
+	}
+	if reclaimedLeads[0].Attempts != 1 {
+		t.Fatalf("expected recovered lead to retain attempts=1 across process crash, got %d", reclaimedLeads[0].Attempts)
+	}
+}
+
+// FailingAttemptRepo simulates database failure during attempt-start
+type FailingAttemptRepo struct {
+	*storage.MemoryPostgresRepository
+	shouldFailAttemptStart bool
+	shouldFailDNC          bool
+}
+
+func (f *FailingAttemptRepo) RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int) error {
+	if f.shouldFailAttemptStart {
+		return fmt.Errorf("simulated postgres connection deadlock on attempt start")
+	}
+	return f.MemoryPostgresRepository.RecordAttemptStart(ctx, leadID, attemptID, attemptNum)
+}
+
+func (f *FailingAttemptRepo) IsDNCProhibited(ctx context.Context, phone string) (bool, error) {
+	if f.shouldFailDNC {
+		return false, fmt.Errorf("simulated postgres timeout during dnc check")
+	}
+	return f.MemoryPostgresRepository.IsDNCProhibited(ctx, phone)
+}
+
+func TestAttemptStartFailureAbortsCarrierDial(t *testing.T) {
+	memRepo := storage.NewMemoryPostgresRepository()
+	failRepo := &FailingAttemptRepo{
+		MemoryPostgresRepository: memRepo,
+		shouldFailAttemptStart:   true,
+	}
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:              "camp_abort_dial",
+		AllocatedAgents: 5,
+		Status:          model.CampaignDraft,
+	}
+	_ = failRepo.SaveCampaign(ctx, camp)
+
+	lead := &model.Lead{
+		ID:          "lead_abort_1",
+		CampaignID:  camp.ID,
+		PhoneNumber: "+14155554321",
+		Priority:    50,
+		Attempts:    0,
+		MaxAttempts: 3,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, _ = failRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	var carrierDials int32
+	recordingDialer := &callbackDialer{
+		dialFn: func(ctx context.Context, lead *model.Lead) (model.CallStatus, time.Duration, error) {
+			atomic.AddInt32(&carrierDials, 1)
+			return model.StatusAnswered, 10 * time.Millisecond, nil
+		},
+	}
+
+	engine := queue.NewCampaignEngine(camp, nil, nil, recordingDialer)
+	engine.SetRepository(failRepo)
+
+	_ = engine.Start()
+	time.Sleep(150 * time.Millisecond)
+	engine.Stop()
+
+	// Carrier dial MUST NOT have been invoked because attempt-start failed!
+	if atomic.LoadInt32(&carrierDials) != 0 {
+		t.Fatalf("expected 0 carrier dials when attempt start persistence fails, got %d", carrierDials)
+	}
+
+	// Verify lead was safely rescheduled to QUEUED with attempts unchanged
+	active, _ := failRepo.GetActiveLeads(ctx, camp.ID)
+	if len(active) != 1 || active[0].Attempts != 0 {
+		t.Errorf("expected lead attempts to remain 0, got %d", active[0].Attempts)
+	}
+}
+
+func TestDNCFailClosedOnDatabaseError(t *testing.T) {
+	memRepo := storage.NewMemoryPostgresRepository()
+	failRepo := &FailingAttemptRepo{
+		MemoryPostgresRepository: memRepo,
+		shouldFailDNC:            true,
+	}
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:              "camp_fail_closed_dnc",
+		AllocatedAgents: 5,
+		Status:          model.CampaignDraft,
+	}
+	_ = failRepo.SaveCampaign(ctx, camp)
+
+	lead := &model.Lead{
+		ID:          "lead_fail_closed_1",
+		CampaignID:  camp.ID,
+		PhoneNumber: "+14155558888",
+		Priority:    50,
+		Attempts:    0,
+		MaxAttempts: 3,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, _ = failRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	var carrierDials int32
+	recordingDialer := &callbackDialer{
+		dialFn: func(ctx context.Context, lead *model.Lead) (model.CallStatus, time.Duration, error) {
+			atomic.AddInt32(&carrierDials, 1)
+			return model.StatusAnswered, 10 * time.Millisecond, nil
+		},
+	}
+
+	// Nil bloom filter forces engine to check repository
+	engine := queue.NewCampaignEngine(camp, nil, nil, recordingDialer)
+	engine.SetRepository(failRepo)
+
+	_ = engine.Start()
+	time.Sleep(150 * time.Millisecond)
+	engine.Stop()
+
+	// Compliance requirement: when DNC status cannot be verified due to DB error, NEVER dial!
+	if atomic.LoadInt32(&carrierDials) != 0 {
+		t.Fatalf("expected 0 dials when DNC DB check fails (fail-closed violated!), got %d", carrierDials)
 	}
 }
 
