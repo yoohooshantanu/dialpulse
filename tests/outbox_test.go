@@ -752,11 +752,12 @@ func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
 	eventIDs := make([]string, totalRows)
 	for i := 0; i < totalRows; i++ {
 		eventIDs[i] = fmt.Sprintf("evt_noblock_%s_%02d", uuid.New().String()[:8], i)
+		intervalStr := fmt.Sprintf("%d milliseconds", i*10)
 		query := `
 			INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
-			VALUES ($1, 'lead', 'lead_noblock', 'test_noblock', '{"test":true}', clock_timestamp() + ($2 || ' milliseconds')::interval)
+			VALUES ($1, 'lead', 'lead_noblock', 'test_noblock', '{"test":true}', clock_timestamp() + $2::interval)
 			ON CONFLICT (id) DO NOTHING;`
-		if _, err := repo.Pool().Exec(ctx, query, eventIDs[i], i*10); err != nil {
+		if _, err := repo.Pool().Exec(ctx, query, eventIDs[i], intervalStr); err != nil {
 			t.Fatalf("failed inserting outbox row %d: %v", i, err)
 		}
 	}
