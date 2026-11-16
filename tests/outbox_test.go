@@ -58,7 +58,7 @@ func setupTestJetStream(t *testing.T, natsURL, streamName, subjectFilter string,
 
 	streamCfg := &nats.StreamConfig{
 		Name:       streamName,
-		Subjects:   []string{subjectFilter},
+		Subjects:   []string{subjectFilter, "dialpulse.dlq.>"},
 		Storage:    nats.MemoryStorage,
 		Duplicates: dedupWindow,
 		MaxAge:     5 * time.Minute,
