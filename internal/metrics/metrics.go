@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 )
 
@@ -15,6 +16,9 @@ type Metrics struct {
 	TotalLeadsIngested    uint64
 	ActiveDialingRoutines int64
 	StorageErrors         uint64
+
+	mu                sync.RWMutex
+	outboxLagSupplier func() float64
 }
 
 var DefaultMetrics = NewMetrics()
@@ -57,6 +61,23 @@ func (m *Metrics) DecActiveDialer() {
 
 func (m *Metrics) IncStorageErrors() {
 	atomic.AddUint64(&m.StorageErrors, 1)
+}
+
+// SetOutboxLagSupplier registers a function that computes the live outbox lag in seconds at scrape time.
+func (m *Metrics) SetOutboxLagSupplier(supplier func() float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outboxLagSupplier = supplier
+}
+
+func (m *Metrics) GetOutboxLag() float64 {
+	m.mu.RLock()
+	supplier := m.outboxLagSupplier
+	m.mu.RUnlock()
+	if supplier != nil {
+		return supplier()
+	}
+	return 0.0
 }
 
 func (m *Metrics) Handler() http.HandlerFunc {
@@ -111,5 +132,10 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		fmt.Fprintf(w, "# HELP dialpulse_storage_errors Total persistence errors during dispatch\n")
 		fmt.Fprintf(w, "# TYPE dialpulse_storage_errors counter\n")
 		fmt.Fprintf(w, "dialpulse_storage_errors %d\n", storageErrs)
+
+		outboxLag := m.GetOutboxLag()
+		fmt.Fprintf(w, "# HELP dialpulse_outbox_lag_seconds Age in seconds of oldest unpublished outbox event\n")
+		fmt.Fprintf(w, "# TYPE dialpulse_outbox_lag_seconds gauge\n")
+		fmt.Fprintf(w, "dialpulse_outbox_lag_seconds %.4f\n", outboxLag)
 	}
 }

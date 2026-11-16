@@ -21,6 +21,16 @@ services:
     networks:
       - dialpulse-net
 
+  nats:
+    image: nats:2-alpine
+    container_name: dialpulse-nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks:
+      - dialpulse-net
+
   dialpulse:
     build:
       context: .
@@ -31,10 +41,13 @@ services:
     environment:
       - PORT=8086
       - DATABASE_URL=postgres://dialpulse_user:dialpulse_password@postgres:5432/dialpulse_db?sslmode=disable
+      - NATS_URL=nats://nats:4222
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      nats:
+        condition: service_started
     networks:
       - dialpulse-net
 

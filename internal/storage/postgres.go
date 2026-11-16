@@ -35,6 +35,10 @@ type CampaignRepository interface {
 	AddDNCNumbers(ctx context.Context, numbers []string) error
 	GetDNCNumbers(ctx context.Context) ([]string, error)
 	IsDNCProhibited(ctx context.Context, phone string) (bool, error)
+	GetOutboxLagSeconds(ctx context.Context) (float64, error)
+	GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]*model.OutboxEvent, error)
+	PurgePublishedOutboxEvents(ctx context.Context, olderThan time.Duration, limit int) (int64, error)
+	GetCampaignOutcomeCount(ctx context.Context, campaignID string, status string) (int64, error)
 	Close()
 }
 
@@ -808,6 +812,101 @@ func (r *PostgresRepository) IsDNCProhibited(ctx context.Context, phone string) 
 	return exists, err
 }
 
+// GetOutboxLagSeconds returns the age in seconds of the oldest unpublished outbox row.
+func (r *PostgresRepository) GetOutboxLagSeconds(ctx context.Context) (float64, error) {
+	query := `
+		SELECT COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - MIN(created_at))), 0)
+		FROM outbox_events
+		WHERE published_at IS NULL;`
+	var lag float64
+	err := r.pool.QueryRow(ctx, query).Scan(&lag)
+	return lag, err
+}
+
+// GetUnpublishedOutboxEvents retrieves pending outbox events for inspection or testing.
+func (r *PostgresRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]*model.OutboxEvent, error) {
+	query := `
+		SELECT id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at
+		FROM outbox_events
+		WHERE published_at IS NULL
+		ORDER BY created_at ASC
+		LIMIT $1;`
+	rows, err := r.pool.Query(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []*model.OutboxEvent
+	for rows.Next() {
+		var evt model.OutboxEvent
+		var payloadBytes []byte
+		if err := rows.Scan(&evt.ID, &evt.AggregateType, &evt.AggregateID, &evt.EventType, &payloadBytes, &evt.CreatedAt, &evt.PublishedAt); err != nil {
+			return nil, err
+		}
+		evt.Payload = payloadBytes
+		events = append(events, &evt)
+	}
+	return events, rows.Err()
+}
+
+// PurgePublishedOutboxEvents removes published outbox events older than the specified retention window.
+func (r *PostgresRepository) PurgePublishedOutboxEvents(ctx context.Context, olderThan time.Duration, limit int) (int64, error) {
+	query := `
+		DELETE FROM outbox_events
+		WHERE id IN (
+			SELECT id FROM outbox_events
+			WHERE published_at IS NOT NULL
+			  AND published_at < clock_timestamp() - $1::interval
+			LIMIT $2
+		);`
+	intervalStr := fmt.Sprintf("%f seconds", olderThan.Seconds())
+	tag, err := r.pool.Exec(ctx, query, intervalStr, limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// GetCampaignOutcomeCount retrieves the aggregated outcome counter for a campaign.
+func (r *PostgresRepository) GetCampaignOutcomeCount(ctx context.Context, campaignID string, status string) (int64, error) {
+	query := `SELECT COALESCE(count, 0) FROM campaign_outcomes WHERE campaign_id = $1 AND status = $2;`
+	var count int64
+	err := r.pool.QueryRow(ctx, query, campaignID, status).Scan(&count)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return count, nil
+}
+
+// RecordProcessedEventTx atomically attempts to record an event as processed within the provided transaction.
+func (r *PostgresRepository) RecordProcessedEventTx(ctx context.Context, tx pgx.Tx, eventID, consumerName string) (bool, error) {
+	query := `
+		INSERT INTO processed_events (event_id, consumer_name, processed_at)
+		VALUES ($1, $2, clock_timestamp())
+		ON CONFLICT (event_id, consumer_name) DO NOTHING;`
+	tag, err := tx.Exec(ctx, query, eventID, consumerName)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// IncrementCampaignOutcomeTx atomically updates the campaign outcome aggregate counter in the provided transaction.
+func (r *PostgresRepository) IncrementCampaignOutcomeTx(ctx context.Context, tx pgx.Tx, campaignID string, status string) error {
+	query := `
+		INSERT INTO campaign_outcomes (campaign_id, status, count, last_updated_at)
+		VALUES ($1, $2, 1, clock_timestamp())
+		ON CONFLICT (campaign_id, status) DO UPDATE SET
+			count = campaign_outcomes.count + 1,
+			last_updated_at = clock_timestamp();`
+	_, err := tx.Exec(ctx, query, campaignID, status)
+	return err
+}
+
 // MemoryPostgresRepository provides an in-memory replica with identical relational semantics and idempotency constraints
 type MemoryPostgresRepository struct {
 	mu         sync.RWMutex
@@ -1161,3 +1260,20 @@ func (r *MemoryPostgresRepository) GetDeadLetterQueue(ctx context.Context, campa
 	copy(res, dlqLeads)
 	return res, nil
 }
+
+func (r *MemoryPostgresRepository) GetOutboxLagSeconds(ctx context.Context) (float64, error) {
+	return 0, nil
+}
+
+func (r *MemoryPostgresRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]*model.OutboxEvent, error) {
+	return nil, nil
+}
+
+func (r *MemoryPostgresRepository) PurgePublishedOutboxEvents(ctx context.Context, olderThan time.Duration, limit int) (int64, error) {
+	return 0, nil
+}
+
+func (r *MemoryPostgresRepository) GetCampaignOutcomeCount(ctx context.Context, campaignID string, status string) (int64, error) {
+	return 0, nil
+}
+

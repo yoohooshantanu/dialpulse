@@ -1,7 +1,9 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -119,3 +121,21 @@ type CampaignStats struct {
 	ActiveCalls           int       `json:"active_calls"`
 	UpdatedAt             time.Time `json:"updated_at"`
 }
+
+// OutboxEvent represents an atomic domain event queued for reliable asynchronous dispatch
+type OutboxEvent struct {
+	ID            string          `json:"id"`
+	AggregateType string          `json:"aggregate_type"`
+	AggregateID   string          `json:"aggregate_id"`
+	EventType     string          `json:"event_type"`
+	Payload       json.RawMessage `json:"payload"`
+	CreatedAt     time.Time       `json:"created_at"`
+	PublishedAt   *time.Time      `json:"published_at,omitempty"`
+}
+
+// DeterministicOutboxEventID generates a deterministic, collision-free event ID
+// based on attempt ID and event type, ensuring ON CONFLICT DO NOTHING idempotency.
+func DeterministicOutboxEventID(attemptID, eventType string) string {
+	return fmt.Sprintf("evt_%s_%s", attemptID, eventType)
+}
+
