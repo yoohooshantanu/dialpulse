@@ -141,30 +141,19 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 
 	eventID := msg.Header.Get("Nats-Msg-Id")
 	if eventID == "" {
-		eventID = string(msg.Data)
+		_ = msg.NakWithDelay(c.cfg.BaseBackoff)
+		return fmt.Errorf("outbox_consumer: missing Nats-Msg-Id header on incoming message")
 	}
 
-	var event model.OutboxEvent
-	if err := json.Unmarshal(msg.Data, &event); err != nil {
-		event = model.OutboxEvent{
-			ID:            eventID,
-			AggregateType: msg.Header.Get("x-aggregate-type"),
-			AggregateID:   msg.Header.Get("x-aggregate-id"),
-			EventType:     msg.Header.Get("x-event-type"),
-			Payload:       msg.Data,
-		}
-	}
-	if event.ID == "" {
-		event.ID = eventID
+	event := model.OutboxEvent{
+		ID:            eventID,
+		AggregateType: msg.Header.Get("x-aggregate-type"),
+		AggregateID:   msg.Header.Get("x-aggregate-id"),
+		EventType:     msg.Header.Get("x-event-type"),
+		Payload:       msg.Data,
 	}
 	if event.AggregateType == "" {
-		event.AggregateType = msg.Header.Get("x-aggregate-type")
-		if event.AggregateType == "" {
-			event.AggregateType = "lead"
-		}
-	}
-	if len(event.Payload) == 0 {
-		event.Payload = msg.Data
+		event.AggregateType = "lead"
 	}
 
 	// Step 1: Open a single database transaction for idempotency record + handler mutation
