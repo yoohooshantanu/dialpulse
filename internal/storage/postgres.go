@@ -488,9 +488,13 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		UPDATE leads
 		SET attempts = $1,
 		    last_attempt_at = NOW()
-		WHERE id = $2;`
-	if _, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID); err != nil {
+		WHERE id = $2 AND status = 'DIALING';`
+	tag1, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID)
+	if err != nil {
 		return fmt.Errorf("failed updating lead attempts in start tx: %w", err)
+	}
+	if tag1.RowsAffected() != 1 {
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status, got %d", leadID, tag1.RowsAffected())
 	}
 
 	insertAttemptQuery := `
@@ -501,8 +505,12 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
 			created_at = EXCLUDED.created_at;`
-	if _, err := tx.Exec(ctx, insertAttemptQuery, attemptID, leadID); err != nil {
+	tag2, err := tx.Exec(ctx, insertAttemptQuery, attemptID, leadID)
+	if err != nil {
 		return fmt.Errorf("failed inserting in-progress attempt: %w", err)
+	}
+	if tag2.RowsAffected() != 1 {
+		return fmt.Errorf("record_attempt_start: expected 1 row inserted for attempt %s, got %d", attemptID, tag2.RowsAffected())
 	}
 
 	return tx.Commit(ctx)
@@ -907,7 +915,10 @@ func (r *MemoryPostgresRepository) RecordAttemptStart(ctx context.Context, leadI
 
 	lead, exists := r.leads[leadID]
 	if !exists {
-		return fmt.Errorf("lead not found: %s", leadID)
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status, got 0", leadID)
+	}
+	if lead.Status != model.StatusDialing {
+		return fmt.Errorf("record_attempt_start: lead %s is not in DIALING status (status=%s)", leadID, lead.Status)
 	}
 	lead.Attempts = attemptNum
 	now := time.Now().UTC()

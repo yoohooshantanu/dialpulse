@@ -353,7 +353,9 @@ func (e *CampaignEngine) persistCallOutcome(ctx context.Context, leadID string, 
 	if e.repo == nil {
 		return
 	}
-	if err := e.repo.RecordCallOutcomeTx(ctx, leadID, status, reason, nextAttempt, attempt, attempts); err != nil {
+	persistCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := e.repo.RecordCallOutcomeTx(persistCtx, leadID, status, reason, nextAttempt, attempt, attempts); err != nil {
 		metrics.DefaultMetrics.IncStorageErrors()
 		logger.L.Error("failed_recording_call_outcome_tx", "lead_id", leadID, "status", status, "error", err)
 	}
@@ -420,7 +422,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	if e.dncFilter != nil && e.dncFilter.Contains(lead.PhoneNumber) {
 		isDNC = true
 	} else if e.repo != nil {
-		prohibited, err := e.repo.IsDNCProhibited(context.Background(), lead.PhoneNumber)
+		dncCtx, dncCancel := context.WithTimeout(e.ctx, 2*time.Second)
+		prohibited, err := e.repo.IsDNCProhibited(dncCtx, lead.PhoneNumber)
+		dncCancel()
 		if err != nil {
 			// Fail-closed on database error: NEVER dial when DNC status cannot be verified!
 			metrics.DefaultMetrics.IncStorageErrors()
@@ -436,8 +440,13 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
 
-			// Safely release row in PostgreSQL
-			_ = e.repo.RescheduleLead(context.Background(), lead.ID, retryTime)
+			// Safely release row in PostgreSQL with bounded context
+			reschedCtx, reschedCancel := context.WithTimeout(e.ctx, 2*time.Second)
+			if rErr := e.repo.RescheduleLead(reschedCtx, lead.ID, retryTime); rErr != nil {
+				logger.L.Error("failed_rescheduling_lead_after_dnc_error", "lead_id", lead.ID, "error", rErr)
+				metrics.DefaultMetrics.IncStorageErrors()
+			}
+			reschedCancel()
 			return
 		}
 		if prohibited {
@@ -486,10 +495,12 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			e.mu.Unlock()
 
 			if e.repo != nil {
-				if err := e.repo.RescheduleLead(context.Background(), lead.ID, nextPermissible); err != nil {
+				reschedCtx, reschedCancel := context.WithTimeout(e.ctx, 2*time.Second)
+				if err := e.repo.RescheduleLead(reschedCtx, lead.ID, nextPermissible); err != nil {
 					metrics.DefaultMetrics.IncStorageErrors()
 					logger.L.Error("failed_rescheduling_timezone_blocked_lead", "lead_id", lead.ID, "error", err)
 				}
+				reschedCancel()
 			}
 			return
 		}
@@ -510,7 +521,10 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	// Durable attempt-start persistence: write attempt increment and in-progress record to DB before carrier dial
 	attemptID := uuid.NewString()
 	if e.repo != nil {
-		if err := e.repo.RecordAttemptStart(context.Background(), lead.ID, attemptID, currentAttempts); err != nil {
+		attemptCtx, attemptCancel := context.WithTimeout(e.ctx, 3*time.Second)
+		err := e.repo.RecordAttemptStart(attemptCtx, lead.ID, attemptID, currentAttempts)
+		attemptCancel()
+		if err != nil {
 			metrics.DefaultMetrics.IncStorageErrors()
 			logger.L.Error("failed_recording_attempt_start_aborting_dial", "lead_id", lead.ID, "attempt_id", attemptID, "error", err)
 
@@ -525,8 +539,13 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
 
-			// Safely release row lock in PostgreSQL
-			_ = e.repo.RescheduleLead(context.Background(), lead.ID, retryTime)
+			// Safely release row lock in PostgreSQL with bounded context
+			reschedCtx, reschedCancel := context.WithTimeout(e.ctx, 2*time.Second)
+			if rErr := e.repo.RescheduleLead(reschedCtx, lead.ID, retryTime); rErr != nil {
+				logger.L.Error("failed_rescheduling_lead_after_attempt_start_error", "lead_id", lead.ID, "error", rErr)
+				metrics.DefaultMetrics.IncStorageErrors()
+			}
+			reschedCancel()
 			return
 		}
 	}

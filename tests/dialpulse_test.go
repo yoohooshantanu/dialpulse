@@ -1709,3 +1709,98 @@ func TestDNCPersistenceAcrossRestart(t *testing.T) {
 		t.Errorf("unexpected number found in DNC filter")
 	}
 }
+
+func TestRecordAttemptStartAffectedRowsValidation(t *testing.T) {
+	ctx := context.Background()
+	memRepo := storage.NewMemoryPostgresRepository()
+
+	// 1. Missing lead must fail affected rows check
+	err := memRepo.RecordAttemptStart(ctx, "non_existent_lead", uuid.NewString(), 1)
+	if err == nil {
+		t.Fatalf("expected error when recording attempt start for non-existent lead, got nil")
+	}
+
+	// 2. Lead in QUEUED state (not DIALING) must fail
+	lead := &model.Lead{
+		ID:          "lead_queued_only",
+		CampaignID:  "camp_test",
+		PhoneNumber: "+14155550199",
+		Status:      model.StatusQueued,
+	}
+	_, _, _ = memRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	err = memRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1)
+	if err == nil {
+		t.Fatalf("expected error when recording attempt start for lead not in DIALING state, got nil")
+	}
+
+	// 3. Lead transitioned to DIALING must succeed
+	lead.Status = model.StatusDialing
+	err = memRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1)
+	if err != nil {
+		t.Fatalf("expected success for lead in DIALING state, got: %v", err)
+	}
+}
+
+func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	// 1. Missing lead: 0 rows affected -> must rollback and return error
+	err = pgRepo.RecordAttemptStart(ctx, "missing_lead_"+uuid.NewString()[:8], uuid.NewString(), 1)
+	if err == nil {
+		t.Fatalf("expected error on live postgres for non-existent lead, got nil")
+	}
+
+	// 2. Ingest lead in QUEUED state without claiming: UPDATE affects 0 rows -> must fail
+	camp := &model.Campaign{
+		ID:              "camp_affected_test_" + uuid.NewString()[:8],
+		AllocatedAgents: 1,
+		Status:          model.CampaignRunning,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	lead := &model.Lead{
+		ID:          "lead_affected_1",
+		CampaignID:  camp.ID,
+		PhoneNumber: fmt.Sprintf("+1415555%04d", rand.Intn(10000)),
+		Priority:    50,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	if err != nil {
+		t.Fatalf("failed ingesting lead: %v", err)
+	}
+
+	// Attempt start without claiming (status is QUEUED, not DIALING) must fail
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1)
+	if err == nil {
+		t.Fatalf("expected error on live postgres when lead status is QUEUED (not DIALING), got nil")
+	}
+
+	// 3. Claim lead into DIALING state: now RecordAttemptStart must affect exactly 1 row and succeed
+	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-affected-1")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming lead: %v", err)
+	}
+
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1)
+	if err != nil {
+		t.Fatalf("expected RecordAttemptStart to succeed on claimed DIALING lead, got %v", err)
+	}
+}
