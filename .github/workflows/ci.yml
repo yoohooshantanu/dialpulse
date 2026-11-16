@@ -53,22 +53,13 @@ jobs:
           go-version: '1.23'
           cache: true
 
-      - name: Run Unit & Live PostgreSQL Integration Tests
+      - name: Run Unit & Live PostgreSQL & NATS Integration Tests
         env:
           TEST_DATABASE_URL: "postgres://postgres:password@localhost:5432/dialpulse_test?sslmode=disable"
           REQUIRE_DB: "1"
           TEST_NATS_URL: "nats://localhost:4222"
           REQUIRE_NATS: "1"
-        run: |
-          set -o pipefail
-          go test -v -race ./tests/... 2>&1 | tee test.log
-
-      - name: Annotate Failing Tests
-        if: always()
-        run: |
-          while IFS= read -r line; do
-            echo "::error title=TestFailure::$line"
-          done < <(grep -A 5 -E "^(--- FAIL:|    outbox_test\.go:)" test.log || true)
+        run: go test -v -race ./tests/...
 
       - name: Build Server Binary
         run: go build -v -o bin/dialpulse ./cmd/server
