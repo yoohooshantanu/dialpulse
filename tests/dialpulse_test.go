@@ -2544,12 +2544,35 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 		attemptStartDone <- pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, leaseTokenA)
 	}()
 
-	// Confirm Worker A is genuinely waiting on Tx 1's row lock
-	select {
-	case earlyErr := <-attemptStartDone:
-		t.Fatalf("expected RecordAttemptStart to block on unmodified row lock, but completed prematurely: %v", earlyErr)
-	case <-time.After(300 * time.Millisecond):
-		// Goroutine successfully confirmed waiting on Tx 1 row lock
+	// Strictly prove that Worker A's query has reached PostgreSQL and is actively blocked in a lock wait
+	// by polling pg_stat_activity for wait_event_type = 'Lock'.
+	var waitingOnLock bool
+	pollDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(pollDeadline) {
+		select {
+		case earlyErr := <-attemptStartDone:
+			t.Fatalf("expected RecordAttemptStart to block on unmodified row lock, but completed prematurely: %v", earlyErr)
+		default:
+		}
+
+		var count int
+		err = pgRepo.Pool().QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM pg_stat_activity
+			WHERE state = 'active'
+			  AND wait_event_type = 'Lock'
+			  AND query ILIKE '%leads%'
+			  AND query ILIKE '%FOR UPDATE%'
+			  AND pid <> pg_backend_pid();
+		`).Scan(&count)
+		if err == nil && count > 0 {
+			waitingOnLock = true
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !waitingOnLock {
+		t.Fatalf("timed out waiting for pg_stat_activity to report wait_event_type = 'Lock' for Worker A")
 	}
 
 	// 5. Wait until the 2-minute lease expires while Tx 1 continues holding the lock without modifying the row.
