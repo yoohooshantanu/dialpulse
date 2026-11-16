@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -694,6 +695,31 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 					createdAt,
 				); err != nil {
 					return fmt.Errorf("failed upserting call attempt in tx: %w", err)
+				}
+
+				// Transactional Outbox: Insert domain event in the exact same PostgreSQL transaction
+				eventID := model.DeterministicOutboxEventID(attempt.ID, "call.outcome_recorded")
+				payloadBytes, err := json.Marshal(map[string]interface{}{
+					"lead_id":     leadID,
+					"campaign_id": attempt.CampaignID,
+					"attempt_id":  attempt.ID,
+					"status":      string(status),
+					"reason":      reason,
+					"attempts":    attempts,
+					"ring_ms":     attempt.RingDurationMs,
+					"talk_ms":     attempt.TalkDurationMs,
+				})
+				if err != nil {
+					return fmt.Errorf("failed marshaling outbox payload: %w", err)
+				}
+
+				insertOutbox := `
+					INSERT INTO outbox_events (
+						id, aggregate_type, aggregate_id, event_type, payload, created_at
+					) VALUES ($1, 'lead', $2, 'outcome_recorded', $3, clock_timestamp())
+					ON CONFLICT (id) DO NOTHING;`
+				if _, err := tx.Exec(ctx, insertOutbox, eventID, leadID, payloadBytes); err != nil {
+					return fmt.Errorf("failed inserting transactional outbox event: %w", err)
 				}
 			}
 

@@ -18,41 +18,66 @@
                                │                                                           ▼
                                ▼                                                [ Scheduling Ticker ]
                      [ PostgreSQL Store ]                                                  │
+                               │                                                           ▼
+                               │                                                [ Dynamic Pacer ]
+                               │                                             (Little's Law Heuristic)
+                               │                                             - Rolling Answer Rate
+                               │                                             - Agents Freeing Soon
+                               │                                             - Abandonment Rate Brake
+                               │                                                           │
+                               │                                           [ Gross Dials Needed: M ]
+                               │                                                           │
+                               │                                           [ In-Flight Ringing Reserve ]
+                               │                                             (Net Dials = M - InFlight)
+                               │                                                           │
+                               │                                                           ▼
+                               │                                           ┌───────────────────────────────┐
+                               │                                           │   Pre-Call Compliance Gate    │
+                               │                                           ├───────────────────────────────┤
+                               │                                           │ 1. DNC Bloom Filter (<1µs)    │
+                               │                                           │ 2. Timezone Governor (TCPA)   │
+                               │                                           └───────────────┬───────────────┘
+                               │                                                           │ [ Verified Safe ]
+                               │                                                           ▼
+                               │                                               [ Carrier Trunk Dispatch ]
+                               │                                                 (Concurrent Dialers)
+                               │                                                           │
+                               │                         ┌─────────────────────────────────┴─────────────────────────────────┐
+                               │                         ▼                                                                   ▼
+                               │                 [ Call Answered ]                                                   [ Unanswered / AMD ]
+                               │                         │                                                        (Voicemail, Busy, No-Ans)
+                               │                         ▼                                                                   │
+                               │            [ Agent Slot Available? ]                                                        ▼
+                               │                   /           \                                                  [ Retry Backoff or DLQ ]
+                               │                YES             NO                                             (Exhausted max attempts -> DLQ)
+                               │                 │               │
+                               │                 ▼               ▼
+                               │         [ CONNECTED ]     [ ABANDONED ] ──► (Throttles Pacer Multiplier)
+                               │                 │               │
+                               └─────────────────┴───────────────┴─────────────────────────┐
                                                                                            ▼
-                                                                                [ Dynamic Pacer ]
-                                                                             (Little's Law Heuristic)
-                                                                             - Rolling Answer Rate
-                                                                             - Agents Freeing Soon
-                                                                             - Abandonment Rate Brake
-                                                                                           │
-                                                                           [ Gross Dials Needed: M ]
-                                                                                           │
-                                                                           [ In-Flight Ringing Reserve ]
-                                                                             (Net Dials = M - InFlight)
+                                                                          ┌─────────────────────────────────┐
+                                                                          │  Atomic RecordCallOutcomeTx     │
+                                                                          │  - Fenced Lead Status Update    │
+                                                                          │  - Call Attempt Insertion       │
+                                                                          │  - Transactional Outbox Insert  │
+                                                                          └────────────────┬────────────────┘
                                                                                            │
                                                                                            ▼
-                                                                           ┌───────────────────────────────┐
-                                                                           │   Pre-Call Compliance Gate    │
-                                                                           ├───────────────────────────────┤
-                                                                           │ 1. DNC Bloom Filter (<1µs)    │
-                                                                           │ 2. Timezone Governor (TCPA)   │
-                                                                           └───────────────┬───────────────┘
-                                                                                           │ [ Verified Safe ]
-                                                                                           ▼
-                                                                               [ Carrier Trunk Dispatch ]
-                                                                                 (Concurrent Dialers)
+                                                                          ┌─────────────────────────────────┐
+                                                                          │   Outbox Relay (SKIP LOCKED)    │
+                                                                          │   - Publishes to NATS JetStream │
+                                                                          │   - Header: Nats-Msg-Id = ID    │
+                                                                          │   - Marks published_at on ACK   │
+                                                                          └────────────────┬────────────────┘
                                                                                            │
-                                         ┌─────────────────────────────────────────────────┴─────────────────────────────────┐
-                                         ▼                                                                                   ▼
-                                 [ Call Answered ]                                                                   [ Unanswered / AMD ]
-                                         │                                                                        (Voicemail, Busy, No-Ans)
-                                         ▼                                                                                   │
-                            [ Agent Slot Available? ]                                                                        ▼
-                                   /           \                                                                  [ Retry Backoff or DLQ ]
-                                YES             NO                                                             (Exhausted max attempts -> DLQ)
-                                 │               │
-                                 ▼               ▼
-                         [ CONNECTED ]     [ ABANDONED ] ──► (Throttles Pacer Multiplier)
+                                                                                           ▼
+                                                                          ┌─────────────────────────────────┐
+                                                                          │  Durable JetStream Consumer     │
+                                                                          │  - Single-Tx Idempotency & DB   │
+                                                                          │  - NakWithDelay Backoff         │
+                                                                          │  - Poison Dead-Letter Queue     │
+                                                                          └─────────────────────────────────┘
 ```
 
 ---
@@ -90,6 +115,30 @@
    - Exposed via inspection endpoint `GET /v1/campaigns/{id}/dlq`.
 8. **Thread-Safe Campaign Lifecycle**:
    - Mutex-guarded `Start()` and `Stop()` routines preventing duplicate ticker loops and worker `sync.WaitGroup` races.
+9. **Transactional Outbox & NATS JetStream Event Pipeline**:
+   - **Atomic Outbox Insertion**: Domain events (`call.outcome_recorded`) are inserted into `outbox_events` in the **exact same PostgreSQL transaction** as `RecordCallOutcomeTx` (`leads` status update and `call_attempts` record). If the transaction fails, neither the outcome nor the outbox row is persisted; if it commits, both are guaranteed to exist on disk.
+   - **Outbox Relay (`FOR UPDATE SKIP LOCKED`)**:
+     - Operates in bounded small batches within a single database transaction:
+       $$\text{BEGIN} \longrightarrow \text{SELECT ... FOR UPDATE SKIP LOCKED} \longrightarrow \text{Publish each to JetStream (with timeout)} \longrightarrow \text{UPDATE published\_at} \longrightarrow \text{COMMIT}$$
+     - If any publish call fails or times out, the transaction rolls back, releasing row locks so unpublished events remain safe in PostgreSQL and are retried on subsequent cycles.
+     - **No Per-Lead Ordering Across Relays**: While individual leads are fenced at the database level, concurrent relays claim distinct batches in parallel without cross-worker coordination. Relays do not guarantee chronological order across different leads or across concurrent batches. Downstream consumers must be resilient to out-of-order event delivery.
+   - **Honest Delivery Semantics: At-Least-Once Delivery**:
+     - Distributed message transport without distributed two-phase commit (2PC) cannot guarantee "exactly-once" delivery across network partitions, broker restarts, or publisher crashes occurring after transport transmission but before database acknowledgment. DialPulse explicitly guarantees **at-least-once delivery** at the transport layer, combined with **atomic idempotency** at the consumer layer.
+   - **JetStream Deduplication Window Limitation**:
+     - NATS JetStream provides message deduplication via the `Nats-Msg-Id` header, but this deduplication is strictly bounded by the stream's rolling `duplicate_window` (e.g., 2 minutes). If an outbox row is re-published after this sliding window expires, JetStream accepts it as a new message (`PubAck.Duplicate == false`). Transport deduplication alone is therefore insufficient for business correctness.
+   - **Consumer Atomic Idempotency (`processed_events`)**:
+     - To ensure end-to-end exactly-once business effects, the consumer executes both its database mutation (e.g., updating aggregated `campaign_outcomes` counters) and the insertion of `event_id` into `processed_events` within **ONE single PostgreSQL transaction**.
+     - If an event ID already exists in `processed_events`, the insert conflicts (`RowsAffected == 0`), and the consumer immediately acknowledges the message without executing any business side-effects.
+   - **Poison Message & Dead-Letter Queue (DLQ)**:
+     - The durable pull consumer inspects `msg.Metadata().NumDelivered`. Transient errors trigger exponential backoff via `msg.NakWithDelay()`.
+     - When delivery attempts reach `MaxDeliveries` (e.g., 3), the consumer routes the poison message along with diagnostic headers (`x-dlq-error`, `x-original-event-id`, `x-delivery-count`) to `dialpulse.dlq.<aggregate_type>` and acknowledges the message from the main stream.
+     - *Crash Limitation*: If a consumer process crashes after successfully publishing to the DLQ subject but before acknowledging the message to the main JetStream stream, the message will be redelivered upon consumer recovery and routed to the DLQ again, creating a duplicate DLQ entry. Downstream DLQ consumers must treat DLQ entries as at-least-once.
+   - **Outbox Lag Metric (`dialpulse_outbox_lag_seconds`)**:
+     - Computed at scrape time directly against PostgreSQL:
+       $$\text{OutboxLag} = \text{EXTRACT}\left(\text{EPOCH FROM } (\text{clock\_timestamp}() - \min(\text{created\_at}))\right) \quad \text{WHERE published\_at IS NULL}$$
+     - Because it is evaluated independently of the relay's internal loop, the metric accurately reflects true backlog age and continues to grow monotonically if the relay process stalls or NATS becomes unavailable.
+   - **Retention & Bounded Purging**:
+     - `PurgePublishedOutboxEvents(ctx, olderThan, limit)` removes published records older than the retention threshold, bounding table size without locking the active tail of unpublished rows.
 
 ---
 
@@ -112,17 +161,20 @@
 
 ## Database Schema (PostgreSQL)
 
-Located in [`migrations/001_init.sql`](migrations/001_init.sql):
+Located in [`migrations/001_init.sql`](migrations/001_init.sql) and [`migrations/002_outbox.sql`](migrations/002_outbox.sql):
 
 - **`campaigns`**: Campaign lifecycle, pacing state, allocated agent counts, and target drop rates.
 - **`leads`**: Campaign-associated leads with priority, retry scheduling (`next_attempt_at`), attempt counters, and terminal status (`DEAD_LETTER_QUEUE`, `CONNECTED`, `ABANDONED`).
 - **`call_attempts`**: Immutable call disposition log tracking telephony latency, duration, carrier errors, and agent leasing times.
+- **`outbox_events`**: Atomic transactional outbox table holding unpublished domain events (`aggregate_type`, `aggregate_id`, `event_type`, `payload`, `created_at`, `published_at`).
+- **`processed_events`**: Consumer idempotency ledger recording processed `(event_id, consumer_name)` keys.
+- **`campaign_outcomes`**: Per-campaign aggregated outcome counters (`campaign_id`, `status`, `count`, `last_updated_at`) updated atomically with consumer deduplication.
 
 ---
 
 ## Docker & Deployment
 
-Spin up DialPulse along with PostgreSQL and Prometheus:
+Spin up DialPulse along with PostgreSQL, NATS JetStream, and Prometheus:
 
 ```bash
 docker-compose up -d
@@ -131,6 +183,7 @@ docker-compose up -d
 Services:
 - **DialPulse Engine**: `http://localhost:8086`
 - **PostgreSQL 16**: `localhost:5432` (Auto-runs migrations on first boot)
+- **NATS 2 (JetStream)**: `localhost:4222` (Management: `http://localhost:8222/healthz`)
 - **Prometheus**: `http://localhost:9091`
 
 ---

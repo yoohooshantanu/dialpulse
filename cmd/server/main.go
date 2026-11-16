@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/yoohooshantanu/dialpulse/internal/dnc"
 	"github.com/yoohooshantanu/dialpulse/internal/logger"
 	"github.com/yoohooshantanu/dialpulse/internal/metrics"
@@ -151,6 +152,38 @@ func main() {
 		dncFilter: dnc.NewBloomFilter(1000000, 0.001),
 		tzGov:     timezone.NewTimezoneGovernor(),
 		repo:      repo,
+	}
+
+	if pgRepo, ok := repo.(*storage.PostgresRepository); ok {
+		metrics.DefaultMetrics.SetOutboxLagSupplier(func() float64 {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			lag, _ := pgRepo.GetOutboxLagSeconds(ctx)
+			return lag
+		})
+	}
+
+	// Initialize Transactional Outbox Relay if NATS_URL is configured
+	natsURL := os.Getenv("NATS_URL")
+	var relay *queue.OutboxRelay
+	if natsURL != "" {
+		nc, err := nats.Connect(natsURL, nats.Timeout(5*time.Second))
+		if err != nil {
+			logger.L.Warn("failed_connecting_to_nats_relay_disabled", "nats_url", natsURL, "error", err)
+		} else {
+			js, err := nc.JetStream()
+			if err != nil {
+				logger.L.Warn("failed_initializing_jetstream_relay_disabled", "error", err)
+			} else {
+				if pgRepo, ok := repo.(*storage.PostgresRepository); ok {
+					relay = queue.NewOutboxRelay(pgRepo.Pool(), queue.NewNATSJetStreamPublisher(js), queue.DefaultOutboxRelayConfig())
+					relay.Start(context.Background())
+					logger.L.Info("transactional_outbox_relay_started", "nats_url", natsURL)
+				}
+			}
+		}
+	} else {
+		logger.L.Warn("NATS_URL_unset_outbox_relay_disabled")
 	}
 
 	// Recover and hydrate DNC persistent registry into Bloom filter (Fail-closed on DB read failure)
@@ -374,6 +407,10 @@ func main() {
 	logger.L.Info("shutting_down_dialpulse")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	if relay != nil {
+		relay.Stop()
+	}
 
 	_ = server.Shutdown(ctx)
 	state.mu.Lock()
