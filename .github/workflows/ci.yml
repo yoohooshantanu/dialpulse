@@ -59,7 +59,16 @@ jobs:
           REQUIRE_DB: "1"
           TEST_NATS_URL: "nats://localhost:4222"
           REQUIRE_NATS: "1"
-        run: go test -v -race ./tests/...
+        run: |
+          set -o pipefail
+          go test -v -race ./tests/... 2>&1 | tee test.log
+
+      - name: Annotate Failing Tests
+        if: always()
+        run: |
+          while IFS= read -r line; do
+            echo "::error title=TestFailure::$line"
+          done < <(grep -A 5 -E "^(--- FAIL:|    outbox_test\.go:)" test.log || true)
 
       - name: Build Server Binary
         run: go build -v -o bin/dialpulse ./cmd/server

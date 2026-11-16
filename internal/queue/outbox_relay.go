@@ -116,7 +116,7 @@ func (r *OutboxRelay) ProcessBatch(ctx context.Context) (int, error) {
 		WHERE published_at IS NULL
 		ORDER BY created_at ASC
 		LIMIT $1
-		FOR UPDATE SKIP LOCKED;`
+		FOR UPDATE;`
 
 	rows, err := tx.Query(ctx, query, r.cfg.BatchSize)
 	if err != nil {

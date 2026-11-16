@@ -705,13 +705,230 @@ func TestOutboxLagMetricKeepsGrowingWhenRelayStopped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed updating published_at: %v", err)
 	}
+}
 
-	// Verify purge functionality
-	purged, err := repo.PurgePublishedOutboxEvents(ctx, 0*time.Second, 10)
-	if err != nil {
-		t.Fatalf("failed purging published events: %v", err)
+// BlockingPublisher allows controlled pausing during publication while holding an active DB transaction
+type BlockingPublisher struct {
+	blockCh     chan struct{}
+	enteredCh   chan struct{}
+	enteredOnce sync.Once
+}
+
+func NewBlockingPublisher() *BlockingPublisher {
+	return &BlockingPublisher{
+		blockCh:   make(chan struct{}),
+		enteredCh: make(chan struct{}),
 	}
-	if purged < 1 {
-		t.Fatalf("expected at least 1 event purged, got %d", purged)
+}
+
+func (b *BlockingPublisher) PublishMsg(ctx context.Context, msg *nats.Msg) (*nats.PubAck, error) {
+	b.enteredOnce.Do(func() {
+		close(b.enteredCh)
+	})
+	select {
+	case <-b.blockCh:
+		return &nats.PubAck{Sequence: 1}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// 8. Competing relays do not block each other: Relay A blocks holding its batch tx; Relay B skips locked rows and completes its batch within ~1s
+func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
+	dbURL := getTestDatabaseURL(t)
+	ctx := context.Background()
+
+	repo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to Postgres: %v", err)
+	}
+	defer repo.Close()
+
+	// Clean outbox slate
+	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events WHERE published_at IS NULL;`)
+
+	// Seed 20 outbox records
+	totalRows := 20
+	eventIDs := make([]string, totalRows)
+	for i := 0; i < totalRows; i++ {
+		eventIDs[i] = fmt.Sprintf("evt_noblock_%s_%02d", uuid.New().String()[:8], i)
+		query := `
+			INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
+			VALUES ($1, 'lead', 'lead_noblock', 'test_noblock', '{"test":true}', clock_timestamp() + ($2 || ' milliseconds')::interval)
+			ON CONFLICT (id) DO NOTHING;`
+		if _, err := repo.Pool().Exec(ctx, query, eventIDs[i], i*10); err != nil {
+			t.Fatalf("failed inserting outbox row %d: %v", i, err)
+		}
+	}
+
+	blockingPub := NewBlockingPublisher()
+	relayA := queue.NewOutboxRelay(repo.Pool(), blockingPub, queue.OutboxRelayConfig{
+		BatchSize:      10,
+		PublishTimeout: 5 * time.Second,
+		SubjectPrefix:  "dialpulse.events.noblock",
+	})
+
+	fastPub := NewCountingPublisher(nil)
+	relayB := queue.NewOutboxRelay(repo.Pool(), fastPub, queue.OutboxRelayConfig{
+		BatchSize:      10,
+		PublishTimeout: 2 * time.Second,
+		SubjectPrefix:  "dialpulse.events.noblock",
+	})
+
+	relayAStarted := make(chan struct{})
+	relayADone := make(chan error, 1)
+
+	// Launch Relay A: it will claim the first 10 rows and block inside PublishMsg
+	go func() {
+		close(relayAStarted)
+		_, err := relayA.ProcessBatch(ctx)
+		relayADone <- err
+	}()
+
+	<-relayAStarted
+	// Wait until Relay A has actually entered PublishMsg (holding the row locks on batch 1)
+	select {
+	case <-blockingPub.enteredCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for Relay A to enter blocking publisher")
+	}
+
+	// Now execute Relay B with a strict 1.5s deadline.
+	// Because of SKIP LOCKED, Relay B MUST skip Relay A's locked rows and complete batch 2 immediately (<1s).
+	// If SKIP LOCKED is removed, Relay B will block on Relay A's row lock and fail with context deadline exceeded.
+	relayBCtx, cancelB := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancelB()
+
+	startB := time.Now()
+	nB, errB := relayB.ProcessBatch(relayBCtx)
+	durationB := time.Since(startB)
+
+	if errB != nil {
+		t.Fatalf("Relay B failed to process its batch (blocked by Relay A): %v", errB)
+	}
+	if nB != 10 {
+		t.Fatalf("expected Relay B to claim and publish exactly 10 skipped rows, got %d", nB)
+	}
+	if durationB > 1200*time.Millisecond {
+		t.Fatalf("expected Relay B to finish within ~1s without blocking, took %v", durationB)
+	}
+
+	// Verify that 10 rows are now marked published in DB while Relay A is still holding its batch
+	var publishedCount int
+	err = repo.Pool().QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE id = ANY($1) AND published_at IS NOT NULL;`, eventIDs).Scan(&publishedCount)
+	if err != nil {
+		t.Fatalf("failed querying published count: %v", err)
+	}
+	if publishedCount != 10 {
+		t.Fatalf("expected 10 rows published by Relay B while Relay A was blocked, got %d", publishedCount)
+	}
+
+	// Now unblock Relay A to complete cleanly
+	close(blockingPub.blockCh)
+	select {
+	case errA := <-relayADone:
+		if errA != nil {
+			t.Fatalf("Relay A returned error after unblock: %v", errA)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timeout waiting for Relay A to finish after unblock")
+	}
+
+	// Verify all 20 rows are now marked published
+	var allPublishedCount int
+	err = repo.Pool().QueryRow(ctx, `SELECT COUNT(*) FROM outbox_events WHERE id = ANY($1) AND published_at IS NOT NULL;`, eventIDs).Scan(&allPublishedCount)
+	if err != nil {
+		t.Fatalf("failed querying final published count: %v", err)
+	}
+	if allPublishedCount != 20 {
+		t.Fatalf("expected all 20 rows published, got %d", allPublishedCount)
+	}
+}
+
+// 9. PurgePublishedOutboxEvents respects olderThan, limit, and never deletes unpublished rows
+func TestPurgePublishedOutboxEvents(t *testing.T) {
+	dbURL := getTestDatabaseURL(t)
+	ctx := context.Background()
+
+	repo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to Postgres: %v", err)
+	}
+	defer repo.Close()
+
+	// Clean baseline
+	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events;`)
+
+	idOldPublished1 := "evt_purge_old1_" + uuid.New().String()[:8]
+	idOldPublished2 := "evt_purge_old2_" + uuid.New().String()[:8]
+	idRecentPublished := "evt_purge_recent_" + uuid.New().String()[:8]
+	idOldUnpublished := "evt_purge_unpub_" + uuid.New().String()[:8]
+
+	// 1. Two old published rows (published 2 hours ago)
+	queryOldPublished := `
+		INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at)
+		VALUES ($1, 'lead', 'l1', 'e1', '{"test":1}', clock_timestamp() - interval '2 hours', clock_timestamp() - interval '2 hours');`
+	if _, err := repo.Pool().Exec(ctx, queryOldPublished, idOldPublished1); err != nil {
+		t.Fatalf("failed inserting old published 1: %v", err)
+	}
+	if _, err := repo.Pool().Exec(ctx, queryOldPublished, idOldPublished2); err != nil {
+		t.Fatalf("failed inserting old published 2: %v", err)
+	}
+
+	// 2. One recently published row (published 10 seconds ago)
+	queryRecentPublished := `
+		INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at)
+		VALUES ($1, 'lead', 'l2', 'e2', '{"test":2}', clock_timestamp() - interval '1 minute', clock_timestamp() - interval '10 seconds');`
+	if _, err := repo.Pool().Exec(ctx, queryRecentPublished, idRecentPublished); err != nil {
+		t.Fatalf("failed inserting recent published: %v", err)
+	}
+
+	// 3. One old UNPUBLISHED row (created 3 hours ago, published_at IS NULL)
+	queryOldUnpublished := `
+		INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at)
+		VALUES ($1, 'lead', 'l3', 'e3', '{"test":3}', clock_timestamp() - interval '3 hours', NULL);`
+	if _, err := repo.Pool().Exec(ctx, queryOldUnpublished, idOldUnpublished); err != nil {
+		t.Fatalf("failed inserting old unpublished: %v", err)
+	}
+
+	// Step A: Purge with olderThan=1 hour, limit=1. Must delete exactly 1 old published row (respecting limit)
+	purged1, err := repo.PurgePublishedOutboxEvents(ctx, 1*time.Hour, 1)
+	if err != nil {
+		t.Fatalf("purge 1 failed: %v", err)
+	}
+	if purged1 != 1 {
+		t.Fatalf("expected exactly 1 row purged with limit=1, got %d", purged1)
+	}
+
+	// Step B: Purge with olderThan=1 hour, limit=10. Must delete the remaining 1 old published row
+	purged2, err := repo.PurgePublishedOutboxEvents(ctx, 1*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("purge 2 failed: %v", err)
+	}
+	if purged2 != 1 {
+		t.Fatalf("expected 1 remaining old published row purged, got %d", purged2)
+	}
+
+	// Step C: Purge again with olderThan=1 hour. No more rows should match
+	purged3, err := repo.PurgePublishedOutboxEvents(ctx, 1*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("purge 3 failed: %v", err)
+	}
+	if purged3 != 0 {
+		t.Fatalf("expected 0 rows purged, got %d", purged3)
+	}
+
+	// Step D: Verify recently published row was NOT deleted (respects olderThan)
+	var recentExists bool
+	err = repo.Pool().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM outbox_events WHERE id = $1);`, idRecentPublished).Scan(&recentExists)
+	if err != nil || !recentExists {
+		t.Fatalf("expected recent published event %s to be retained, exists=%v", idRecentPublished, recentExists)
+	}
+
+	// Step E: Verify old UNPUBLISHED row was NOT deleted (NEVER deletes unpublished rows!)
+	var unpubExists bool
+	err = repo.Pool().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM outbox_events WHERE id = $1);`, idOldUnpublished).Scan(&unpubExists)
+	if err != nil || !unpubExists {
+		t.Fatalf("expected unpublished event %s to NEVER be deleted, exists=%v", idOldUnpublished, unpubExists)
 	}
 }
