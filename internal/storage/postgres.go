@@ -388,18 +388,17 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
-	// Step 1: Acquire row lock first with FOR UPDATE, then evaluate lease validity against clock_timestamp()
+	// Step 1: Acquire exclusive row lock first and retrieve only raw fields
 	lockQuery := `
-		SELECT status, lease_token,
-		       (locked_at IS NOT NULL AND locked_at >= clock_timestamp() - $2::interval) AS lease_valid
+		SELECT status, lease_token, locked_at
 		FROM leads
 		WHERE id = $1
 		FOR UPDATE;`
 
 	var currentStatus string
 	var currentToken *string
-	var leaseValid bool
-	err = tx.QueryRow(ctx, lockQuery, leadID, intervalStr).Scan(&currentStatus, &currentToken, &leaseValid)
+	var lockedAt *time.Time
+	err = tx.QueryRow(ctx, lockQuery, leadID).Scan(&currentStatus, &currentToken, &lockedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, lead not found", leadID)
@@ -407,11 +406,11 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 		return fmt.Errorf("failed locking lead for reschedule: %w", err)
 	}
 
-	if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || !leaseValid {
+	if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || lockedAt == nil {
 		return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, got 0 affected rows", leadID)
 	}
 
-	// Step 2: Reschedule lead under exclusive lock
+	// Step 2: Reschedule lead under exclusive lock, evaluating lease expiry dynamically via clock_timestamp() inside the UPDATE
 	updateQuery := `
 		UPDATE leads
 		SET status = 'QUEUED',
@@ -419,8 +418,12 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 		    locked_by = NULL,
 		    locked_at = NULL,
 		    lease_token = NULL
-		WHERE id = $2;`
-	tag, err := tx.Exec(ctx, updateQuery, nextAttempt, leadID)
+		WHERE id = $2
+		  AND status = 'DIALING'
+		  AND lease_token = $3
+		  AND locked_at IS NOT NULL
+		  AND locked_at >= clock_timestamp() - $4::interval;`
+	tag, err := tx.Exec(ctx, updateQuery, nextAttempt, leadID, leaseToken, intervalStr)
 	if err != nil {
 		return err
 	}
@@ -533,18 +536,17 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
-	// Step 1: Acquire exclusive row lock first, evaluating lease validity against post-lock clock_timestamp()
+	// Step 1: Acquire exclusive row lock first and retrieve only raw fields
 	lockQuery := `
-		SELECT status, lease_token,
-		       (locked_at IS NOT NULL AND locked_at >= clock_timestamp() - $2::interval) AS lease_valid
+		SELECT status, lease_token, locked_at
 		FROM leads
 		WHERE id = $1
 		FOR UPDATE;`
 
 	var currentStatus string
 	var currentToken *string
-	var leaseValid bool
-	err = tx.QueryRow(ctx, lockQuery, leadID, intervalStr).Scan(&currentStatus, &currentToken, &leaseValid)
+	var lockedAt *time.Time
+	err = tx.QueryRow(ctx, lockQuery, leadID).Scan(&currentStatus, &currentToken, &lockedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("record_attempt_start: lead %s not found", leadID)
@@ -552,23 +554,27 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		return fmt.Errorf("failed locking lead for attempt start: %w", err)
 	}
 
-	if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || !leaseValid {
+	if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || lockedAt == nil {
 		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got 0", leadID)
 	}
 
-	// Step 2: Under the row lock, refresh locked_at and record attempt number using clock_timestamp()
+	// Step 2: Under the held row lock, execute conditional UPDATE evaluating clock_timestamp() at statement execution time
 	updateLeadQuery := `
 		UPDATE leads
 		SET attempts = $1,
 		    last_attempt_at = clock_timestamp(),
 		    locked_at = clock_timestamp()
-		WHERE id = $2;`
-	tag1, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID)
+		WHERE id = $2
+		  AND status = 'DIALING'
+		  AND lease_token = $3
+		  AND locked_at IS NOT NULL
+		  AND locked_at >= clock_timestamp() - $4::interval;`
+	tag1, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID, leaseToken, intervalStr)
 	if err != nil {
 		return fmt.Errorf("failed updating lead attempts in start tx: %w", err)
 	}
 	if tag1.RowsAffected() != 1 {
-		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s, got %d", leadID, tag1.RowsAffected())
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got %d", leadID, tag1.RowsAffected())
 	}
 
 	// Step 3: Insert the IN_PROGRESS attempt record
@@ -576,11 +582,11 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		INSERT INTO call_attempts (
 			id, campaign_id, lead_id, phone_number, status, created_at
 		) SELECT $1, campaign_id, id, phone_number, 'IN_PROGRESS', clock_timestamp()
-		FROM leads WHERE id = $2
+		FROM leads WHERE id = $2 AND status = 'DIALING' AND lease_token = $3
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
 			created_at = EXCLUDED.created_at;`
-	tag2, err := tx.Exec(ctx, insertAttemptQuery, attemptID, leadID)
+	tag2, err := tx.Exec(ctx, insertAttemptQuery, attemptID, leadID, leaseToken)
 	if err != nil {
 		return fmt.Errorf("failed inserting in-progress attempt: %w", err)
 	}
@@ -609,18 +615,17 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 			}
 			defer tx.Rollback(ctx)
 
-			// Step 1: Acquire row lock first, evaluating lease validity against post-lock clock_timestamp()
+			// Step 1: Acquire exclusive row lock first and retrieve only raw fields
 			lockQuery := `
-				SELECT status, lease_token,
-				       (locked_at IS NOT NULL AND locked_at >= clock_timestamp() - $2::interval) AS lease_valid
+				SELECT status, lease_token, locked_at
 				FROM leads
 				WHERE id = $1
 				FOR UPDATE;`
 
 			var currentStatus string
 			var currentToken *string
-			var leaseValid bool
-			err = tx.QueryRow(ctx, lockQuery, leadID, intervalStr).Scan(&currentStatus, &currentToken, &leaseValid)
+			var lockedAt *time.Time
+			err = tx.QueryRow(ctx, lockQuery, leadID).Scan(&currentStatus, &currentToken, &lockedAt)
 			if err != nil {
 				if err == pgx.ErrNoRows {
 					return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, lead not found", leadID)
@@ -628,10 +633,11 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 				return fmt.Errorf("failed locking lead for outcome tx: %w", err)
 			}
 
-			if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || !leaseValid {
+			if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || lockedAt == nil {
 				return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, got 0 affected rows", leadID)
 			}
 
+			// Step 2: Conditional UPDATE under the held row lock, evaluating clock_timestamp() at statement execution time
 			updateQuery := `
 				UPDATE leads
 				SET status = $1,
@@ -642,8 +648,12 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 				    locked_by = NULL,
 				    locked_at = NULL,
 				    lease_token = NULL
-				WHERE id = $5;`
-			tag, err := tx.Exec(ctx, updateQuery, string(status), reason, nextAttempt, attempts, leadID)
+				WHERE id = $5
+				  AND status = 'DIALING'
+				  AND lease_token = $6
+				  AND locked_at IS NOT NULL
+				  AND locked_at >= clock_timestamp() - $7::interval;`
+			tag, err := tx.Exec(ctx, updateQuery, string(status), reason, nextAttempt, attempts, leadID, leaseToken, intervalStr)
 			if err != nil {
 				return fmt.Errorf("failed updating lead status in tx: %w", err)
 			}

@@ -2463,10 +2463,11 @@ func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing
 	}
 }
 
-// TestLivePostgresAttemptStartLockWaitExpiryRejection verifies that when a transaction waits on a row lock,
-// lease expiry is evaluated post-lock-acquisition using clock_timestamp(), not the stale transaction start time.
-// If Tx 1 holds the lock and backdates locked_at beyond DefaultLeaseTTL before committing, Worker A's blocked
-// RecordAttemptStart MUST be rejected upon acquiring the lock, inserting 0 attempts and incrementing 0 attempts.
+// TestLivePostgresAttemptStartLockWaitExpiryRejection verifies that when a transaction waits on an unmodified
+// row lock held by another transaction, lease expiry is evaluated post-lock-acquisition via the conditional UPDATE
+// using clock_timestamp(), without relying on EvalPlanQual recheck or LockRows projection.
+// Even when Tx 1 holds the lock without modifying the row and releases it after the lease expires, Worker A's
+// blocked RecordAttemptStart MUST be rejected upon acquiring the lock, inserting 0 attempts and incrementing 0 attempts.
 func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -2515,7 +2516,14 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 		t.Fatalf("expected non-empty lease token")
 	}
 
-	// 2. Tx 1 starts and acquires an exclusive row lock on the lead row
+	// 2. Set locked_at to just before the 2-minute (120s) expiry: 119 seconds ago, and commit that change
+	_, err = pgRepo.Pool().Exec(ctx,
+		"UPDATE leads SET locked_at = clock_timestamp() - INTERVAL '119 seconds' WHERE id = $1", lead.ID)
+	if err != nil {
+		t.Fatalf("failed setting locked_at near expiry: %v", err)
+	}
+
+	// 3. Tx 1 starts and acquires an exclusive row lock WITHOUT modifying the row
 	tx1, err := pgRepo.Pool().Begin(ctx)
 	if err != nil {
 		t.Fatalf("failed to begin tx1: %v", err)
@@ -2528,44 +2536,43 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 		t.Fatalf("failed acquiring row lock in tx1: %v", err)
 	}
 
-	// 3. Worker A initiates RecordAttemptStart in a background goroutine.
-	// It begins its transaction and attempts SELECT ... FOR UPDATE, which BLOCKS on Tx 1's lock.
+	// 4. Worker A initiates RecordAttemptStart in a background goroutine.
+	// It begins its transaction and executes SELECT ... FOR UPDATE, which BLOCKS waiting on Tx 1's lock.
 	attemptID := uuid.NewString()
 	attemptStartDone := make(chan error, 1)
 	go func() {
 		attemptStartDone <- pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, leaseTokenA)
 	}()
 
-	// Verify Worker A is genuinely blocked waiting on the row lock
+	// Confirm Worker A is genuinely waiting on Tx 1's row lock
 	select {
 	case earlyErr := <-attemptStartDone:
-		t.Fatalf("expected RecordAttemptStart to block on row lock, but completed prematurely: %v", earlyErr)
+		t.Fatalf("expected RecordAttemptStart to block on unmodified row lock, but completed prematurely: %v", earlyErr)
 	case <-time.After(300 * time.Millisecond):
-		// Goroutine successfully blocked on Tx 1 row lock
+		// Goroutine successfully confirmed waiting on Tx 1 row lock
 	}
 
-	// 4. While Worker A is waiting for the row lock, Tx 1 backdates locked_at past DefaultLeaseTTL (3 minutes ago)
-	_, err = tx1.Exec(ctx, "UPDATE leads SET locked_at = clock_timestamp() - INTERVAL '3 minutes' WHERE id = $1", lead.ID)
-	if err != nil {
-		t.Fatalf("failed backdating locked_at in tx1: %v", err)
-	}
+	// 5. Wait until the 2-minute lease expires while Tx 1 continues holding the lock without modifying the row.
+	// Since locked_at was set to 119s ago, sleeping 1500ms guarantees elapsed time > 120.5s (> DefaultLeaseTTL).
+	time.Sleep(1500 * time.Millisecond)
 
-	// 5. Tx 1 commits, releasing the row lock to Worker A
+	// 6. Tx 1 commits, releasing the lock without having made any modification to the row.
+	// This ensures PostgreSQL does NOT trigger EvalPlanQual recheck.
 	if err := tx1.Commit(ctx); err != nil {
 		t.Fatalf("failed committing tx1: %v", err)
 	}
 
-	// 6. Worker A unblocks, acquires row lock, evaluates lease validity via clock_timestamp(), and MUST FAIL
+	// 7. Worker A unblocks, acquires row lock, executes the conditional UPDATE with clock_timestamp(), and MUST FAIL
 	select {
 	case startErr := <-attemptStartDone:
 		if startErr == nil {
-			t.Fatalf("expected RecordAttemptStart to fail due to lock-wait lease expiry, but succeeded!")
+			t.Fatalf("expected RecordAttemptStart to fail due to lock-wait lease expiry on unmodified row lock, but succeeded!")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for RecordAttemptStart to finish after row lock released")
 	}
 
-	// 7. Verify in PostgreSQL that:
+	// 8. Verify in PostgreSQL that:
 	// - lead attempts counter remains 0
 	// - no call_attempts row was inserted
 	var dbAttempts int

@@ -48,7 +48,7 @@ func (s *ServerState) recoverCampaigns(ctx context.Context) error {
 
 	for _, camp := range camps {
 		// Reclaim any orphaned leases from crashed previous instances
-		if reclaimed, err := s.repo.ReclaimExpiredLeases(ctx, camp.ID, 2*time.Minute); err != nil {
+		if reclaimed, err := s.repo.ReclaimExpiredLeases(ctx, camp.ID, model.DefaultLeaseTTL); err != nil {
 			logger.L.Error("failed_reclaiming_expired_leases_during_recovery", "campaign_id", camp.ID, "error", err)
 		} else if reclaimed > 0 {
 			logger.L.Warn("orphaned_dialing_leases_reclaimed", "campaign_id", camp.ID, "count", reclaimed)
@@ -106,7 +106,7 @@ func (s *ServerState) getOrHydrateCampaign(ctx context.Context, campaignID strin
 	}
 
 	// Reclaim any expired leases
-	_, _ = s.repo.ReclaimExpiredLeases(ctx, camp.ID, 2*time.Minute)
+	_, _ = s.repo.ReclaimExpiredLeases(ctx, camp.ID, model.DefaultLeaseTTL)
 
 	engine = queue.NewCampaignEngine(camp, s.dncFilter, s.tzGov, nil)
 	engine.SetRepository(s.repo)
