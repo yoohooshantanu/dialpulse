@@ -29,12 +29,15 @@ CREATE TABLE IF NOT EXISTS leads (
     failure_reason VARCHAR(255),
     locked_by VARCHAR(64),
     locked_at TIMESTAMPTZ,
+    lease_token VARCHAR(64),
     last_attempt_at TIMESTAMPTZ,
     next_attempt_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- Strict Idempotency: Prevent duplicate active leads for the same phone within a campaign
     CONSTRAINT uq_campaign_phone UNIQUE (campaign_id, phone_number)
 );
+
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS lease_token VARCHAR(64);
 
 CREATE INDEX IF NOT EXISTS idx_leads_dispatch 
     ON leads (campaign_id, status, priority DESC, next_attempt_at ASC);

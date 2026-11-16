@@ -60,6 +60,7 @@ type Lead struct {
 	FailureReason string     `json:"failure_reason,omitempty"`
 	LockedBy      string     `json:"locked_by,omitempty"`
 	LockedAt      *time.Time `json:"locked_at,omitempty"`
+	LeaseToken    string     `json:"lease_token,omitempty"`
 	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
 	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`

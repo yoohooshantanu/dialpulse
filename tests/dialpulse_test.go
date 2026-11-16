@@ -885,7 +885,7 @@ func TestAtomicTransactionalOutcomePersistence(t *testing.T) {
 	}
 
 	// Atomically persist outcome
-	err := repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attempt, 1)
+	err := repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attempt, 1, "")
 	if err != nil {
 		t.Fatalf("expected atomic outcome persistence to succeed: %v", err)
 	}
@@ -1367,7 +1367,7 @@ func TestLivePostgresDurableAttemptStartPersistenceCrashSafety(t *testing.T) {
 
 	// 2. Prior to carrier dial, RecordAttemptStart writes attempts=1 and IN_PROGRESS attempt record durably to PostgreSQL
 	attemptID := uuid.NewString()
-	err = pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1)
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("failed recording attempt start on live postgres: %v", err)
 	}
@@ -1421,11 +1421,11 @@ type FailingAttemptRepo struct {
 	shouldFailDNC          bool
 }
 
-func (f *FailingAttemptRepo) RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int) error {
+func (f *FailingAttemptRepo) RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int, leaseToken string) error {
 	if f.shouldFailAttemptStart {
 		return fmt.Errorf("simulated postgres connection deadlock on attempt start")
 	}
-	return f.MemoryPostgresRepository.RecordAttemptStart(ctx, leadID, attemptID, attemptNum)
+	return f.MemoryPostgresRepository.RecordAttemptStart(ctx, leadID, attemptID, attemptNum, leaseToken)
 }
 
 func (f *FailingAttemptRepo) IsDNCProhibited(ctx context.Context, phone string) (bool, error) {
@@ -1635,7 +1635,7 @@ func TestAttemptCountingExactnessAndConsistency(t *testing.T) {
 
 	// 2. Call attempt occurs (dial 1) -> busy -> retry 1 scheduled in the past to simulate elapsed backoff
 	pastRetry := time.Now().UTC().Add(-10 * time.Millisecond)
-	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusQueued, "BUSY", &pastRetry, nil, 1)
+	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusQueued, "BUSY", &pastRetry, nil, 1, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("failed recording outcome 1: %v", err)
 	}
@@ -1651,7 +1651,7 @@ func TestAttemptCountingExactnessAndConsistency(t *testing.T) {
 	if len(claimed) != 1 || claimed[0].Attempts != 1 {
 		t.Fatalf("expected claim with attempts=1, got %v", claimed)
 	}
-	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusQueued, "BUSY", &pastRetry, nil, 2)
+	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusQueued, "BUSY", &pastRetry, nil, 2, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("failed recording outcome 2: %v", err)
 	}
@@ -1661,7 +1661,7 @@ func TestAttemptCountingExactnessAndConsistency(t *testing.T) {
 	if len(claimed) != 1 || claimed[0].Attempts != 2 {
 		t.Fatalf("expected claim with attempts=2, got %v", claimed)
 	}
-	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusDLQ, "EXHAUSTED_MAX_ATTEMPTS", nil, nil, 3)
+	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusDLQ, "EXHAUSTED_MAX_ATTEMPTS", nil, nil, 3, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("failed recording DLQ outcome: %v", err)
 	}
@@ -1715,7 +1715,7 @@ func TestRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 	memRepo := storage.NewMemoryPostgresRepository()
 
 	// 1. Missing lead must fail affected rows check
-	err := memRepo.RecordAttemptStart(ctx, "non_existent_lead", uuid.NewString(), 1)
+	err := memRepo.RecordAttemptStart(ctx, "non_existent_lead", uuid.NewString(), 1, "token-1")
 	if err == nil {
 		t.Fatalf("expected error when recording attempt start for non-existent lead, got nil")
 	}
@@ -1729,16 +1729,22 @@ func TestRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 	}
 	_, _, _ = memRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
 
-	err = memRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1)
+	err = memRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, "token-1")
 	if err == nil {
 		t.Fatalf("expected error when recording attempt start for lead not in DIALING state, got nil")
 	}
 
-	// 3. Lead transitioned to DIALING must succeed
+	// 3. Lead transitioned to DIALING with matching lease token must succeed
 	lead.Status = model.StatusDialing
-	err = memRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1)
+	lead.LeaseToken = "token-valid"
+	err = memRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, "token-stale")
+	if err == nil {
+		t.Fatalf("expected error on lease token mismatch, got nil")
+	}
+
+	err = memRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, "token-valid")
 	if err != nil {
-		t.Fatalf("expected success for lead in DIALING state, got: %v", err)
+		t.Fatalf("expected success for lead in DIALING state with valid lease token, got: %v", err)
 	}
 }
 
@@ -1759,7 +1765,7 @@ func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 	defer pgRepo.Close()
 
 	// 1. Missing lead: 0 rows affected -> must rollback and return error
-	err = pgRepo.RecordAttemptStart(ctx, "missing_lead_"+uuid.NewString()[:8], uuid.NewString(), 1)
+	err = pgRepo.RecordAttemptStart(ctx, "missing_lead_"+uuid.NewString()[:8], uuid.NewString(), 1, "token-1")
 	if err == nil {
 		t.Fatalf("expected error on live postgres for non-existent lead, got nil")
 	}
@@ -1788,7 +1794,7 @@ func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 	}
 
 	// Attempt start without claiming (status is QUEUED, not DIALING) must fail
-	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1)
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, "token-1")
 	if err == nil {
 		t.Fatalf("expected error on live postgres when lead status is QUEUED (not DIALING), got nil")
 	}
@@ -1799,8 +1805,126 @@ func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 		t.Fatalf("failed claiming lead: %v", err)
 	}
 
-	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1)
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("expected RecordAttemptStart to succeed on claimed DIALING lead, got %v", err)
+	}
+}
+
+// TestLivePostgresDistributedLeaseFencingStaleWorkerRejected verifies distributed fencing token semantics:
+// 1. Worker A claims a lead, receiving leaseToken A.
+// 2. Lease expires (> 2 minutes) and Worker B reclaims the lead, receiving new distinct leaseToken B.
+// 3. Resumed stale Worker A calls RecordAttemptStart() with leaseToken A -> REJECTED (0 rows affected).
+// 4. Active Worker B calls RecordAttemptStart() with leaseToken B -> SUCCEEDS (1 row affected).
+// 5. Stale Worker A calls RecordCallOutcomeTx() with leaseToken A -> REJECTED.
+// 6. Active Worker B calls RecordCallOutcomeTx() with leaseToken B -> SUCCEEDS.
+func TestLivePostgresDistributedLeaseFencingStaleWorkerRejected(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	camp := &model.Campaign{
+		ID:              "camp_fencing_" + uuid.NewString()[:8],
+		AllocatedAgents: 5,
+		Status:          model.CampaignRunning,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	lead := &model.Lead{
+		ID:          "lead_fencing_" + uuid.NewString()[:8],
+		CampaignID:  camp.ID,
+		PhoneNumber: fmt.Sprintf("+1415555%04d", rand.Intn(10000)),
+		Priority:    100,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	if err != nil {
+		t.Fatalf("failed ingesting lead: %v", err)
+	}
+
+	// 1. Worker A claims lead
+	claimedA, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
+	if err != nil || len(claimedA) != 1 {
+		t.Fatalf("worker A failed claiming lead: %v", err)
+	}
+	leaseTokenA := claimedA[0].LeaseToken
+	if leaseTokenA == "" {
+		t.Fatalf("expected non-empty leaseToken for claimed lead")
+	}
+
+	// 2. Simulate Worker A process pause/delay past 2-minute lease TTL
+	_, err = pgRepo.Pool().Exec(ctx,
+		"UPDATE leads SET locked_at = NOW() - INTERVAL '3 minutes' WHERE id = $1", lead.ID)
+	if err != nil {
+		t.Fatalf("failed simulating expired lease: %v", err)
+	}
+
+	// 3. Worker B reclaims the expired lead
+	claimedB, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-B")
+	if err != nil || len(claimedB) != 1 {
+		t.Fatalf("worker B failed reclaiming expired lead: %v", err)
+	}
+	leaseTokenB := claimedB[0].LeaseToken
+	if leaseTokenB == "" || leaseTokenB == leaseTokenA {
+		t.Fatalf("expected Worker B to receive a new distinct leaseToken, got %s (A was %s)", leaseTokenB, leaseTokenA)
+	}
+
+	// 4. Stale Worker A resumes and calls RecordAttemptStart with stale leaseToken A -> MUST FAIL
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, leaseTokenA)
+	if err == nil {
+		t.Fatalf("expected stale Worker A attempt-start to fail due to lease token fencing, but got nil error")
+	}
+
+	// 5. Active Worker B calls RecordAttemptStart with valid leaseToken B -> MUST SUCCEED
+	attemptIDB := uuid.NewString()
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, attemptIDB, 1, leaseTokenB)
+	if err != nil {
+		t.Fatalf("expected active Worker B attempt-start to succeed, got %v", err)
+	}
+
+	// 6. Stale Worker A attempts to record outcome with stale leaseToken A -> MUST FAIL
+	err = pgRepo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_STALE_A", nil, nil, 1, leaseTokenA)
+	if err == nil {
+		t.Fatalf("expected stale Worker A outcome persistence to fail due to lease token fencing, but got nil error")
+	}
+
+	// 7. Active Worker B records outcome with valid leaseToken B -> MUST SUCCEED
+	attemptB := &model.CallAttempt{
+		ID:             attemptIDB,
+		CampaignID:     camp.ID,
+		LeadID:         lead.ID,
+		PhoneNumber:    lead.PhoneNumber,
+		Status:         model.StatusConnected,
+		RingDurationMs: 100,
+		TalkDurationMs: 2000,
+		CreatedAt:      time.Now().UTC(),
+	}
+	err = pgRepo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attemptB, 1, leaseTokenB)
+	if err != nil {
+		t.Fatalf("expected active Worker B outcome persistence to succeed, got %v", err)
+	}
+
+	// 8. Verify final disposition in PostgreSQL matches Worker B's outcome
+	var finalStatus, finalReason string
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT status, failure_reason FROM leads WHERE id = $1", lead.ID).Scan(&finalStatus, &finalReason)
+	if err != nil {
+		t.Fatalf("failed querying final lead status: %v", err)
+	}
+	if finalStatus != "CONNECTED" || finalReason != "CONNECTED_NORMAL" {
+		t.Fatalf("expected lead status CONNECTED / CONNECTED_NORMAL from Worker B, got %s / %s", finalStatus, finalReason)
 	}
 }

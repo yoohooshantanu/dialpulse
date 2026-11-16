@@ -348,14 +348,14 @@ func (e *CampaignEngine) tick() {
 }
 
 
-// persistCallOutcome updates lead status and records call attempts in PostgreSQL with atomic transactional persistence and error tracking
-func (e *CampaignEngine) persistCallOutcome(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int) {
+// persistCallOutcome updates lead status and records call attempts in PostgreSQL with atomic transactional persistence, error tracking, and lease fencing
+func (e *CampaignEngine) persistCallOutcome(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int, leaseToken string) {
 	if e.repo == nil {
 		return
 	}
 	persistCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := e.repo.RecordCallOutcomeTx(persistCtx, leadID, status, reason, nextAttempt, attempt, attempts); err != nil {
+	if err := e.repo.RecordCallOutcomeTx(persistCtx, leadID, status, reason, nextAttempt, attempt, attempts, leaseToken); err != nil {
 		metrics.DefaultMetrics.IncStorageErrors()
 		logger.L.Error("failed_recording_call_outcome_tx", "lead_id", leadID, "status", status, "error", err)
 	}
@@ -474,7 +474,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			Status:       model.StatusDLQ,
 			ErrorMessage: "DNC_PROHIBITED",
 			CreatedAt:    time.Now().UTC(),
-		}, lead.Attempts)
+		}, lead.Attempts, lead.LeaseToken)
 		logger.L.Warn("dial_routed_to_dlq_dnc", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 		return
 	}
@@ -518,11 +518,11 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	currentAttempts := lead.Attempts
 	e.mu.Unlock()
 
-	// Durable attempt-start persistence: write attempt increment and in-progress record to DB before carrier dial
+	// Durable attempt-start persistence: write attempt increment and in-progress record to DB before carrier dial with lease fencing
 	attemptID := uuid.NewString()
 	if e.repo != nil {
 		attemptCtx, attemptCancel := context.WithTimeout(e.ctx, 3*time.Second)
-		err := e.repo.RecordAttemptStart(attemptCtx, lead.ID, attemptID, currentAttempts)
+		err := e.repo.RecordAttemptStart(attemptCtx, lead.ID, attemptID, currentAttempts, lead.LeaseToken)
 		attemptCancel()
 		if err != nil {
 			metrics.DefaultMetrics.IncStorageErrors()
@@ -579,7 +579,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			RingDurationMs: int(ringDuration.Milliseconds()),
 			ErrorMessage:   attemptErr,
 			CreatedAt:      time.Now().UTC(),
-		}, currentAttempts)
+		}, currentAttempts, lead.LeaseToken)
 		return
 	}
 
@@ -614,7 +614,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				Status:         status,
 				RingDurationMs: int(ringDuration.Milliseconds()),
 				CreatedAt:      time.Now().UTC(),
-			}, currentAttempts)
+			}, currentAttempts, lead.LeaseToken)
 			logger.L.Info("lead_retry_scheduled", "lead_id", lead.ID, "attempt", lead.Attempts, "retry_at", retryTime)
 			return
 		}
@@ -641,7 +641,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			RingDurationMs: int(ringDuration.Milliseconds()),
 			ErrorMessage:   attemptErr,
 			CreatedAt:      time.Now().UTC(),
-		}, currentAttempts)
+		}, currentAttempts, lead.LeaseToken)
 		logger.L.Warn("lead_routed_to_dlq_exhausted", "lead_id", lead.ID, "attempts", lead.Attempts)
 		return
 	}
@@ -663,7 +663,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			Status:         finalStatus,
 			RingDurationMs: int(ringDuration.Milliseconds()),
 			CreatedAt:      time.Now().UTC(),
-		}, currentAttempts)
+		}, currentAttempts, lead.LeaseToken)
 		return
 	}
 
@@ -699,7 +699,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				RingDurationMs: int(ringDuration.Milliseconds()),
 				TalkDurationMs: int(talkDuration.Milliseconds()),
 				CreatedAt:      time.Now().UTC(),
-			}, currentAttempts)
+			}, currentAttempts, lead.LeaseToken)
 		} else {
 			// No agent was available when customer answered -> Abandoned Call!
 			atomic.AddInt32(&e.idleAgents, 1)
@@ -725,7 +725,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				RingDurationMs: int(ringDuration.Milliseconds()),
 				ErrorMessage:   attemptErr,
 				CreatedAt:      time.Now().UTC(),
-			}, currentAttempts)
+			}, currentAttempts, lead.LeaseToken)
 		}
 		return
 	}
@@ -745,7 +745,7 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		Status:         status,
 		RingDurationMs: int(ringDuration.Milliseconds()),
 		CreatedAt:      time.Now().UTC(),
-	}, currentAttempts)
+	}, currentAttempts, lead.LeaseToken)
 }
 
 // GetStats returns live statistical progress
