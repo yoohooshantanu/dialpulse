@@ -26,7 +26,7 @@ type CampaignRepository interface {
 	IngestLeadsIdempotent(ctx context.Context, leads []*model.Lead) (insertedIDs []string, duplicates int, err error)
 	ClaimPendingLeads(ctx context.Context, campaignID string, limit int, workerID string) ([]*model.Lead, error)
 	ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error)
-	RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time) error
+	RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time, leaseToken string) error
 	UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error
 	RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error
 	RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int, leaseToken string) error
@@ -371,8 +371,12 @@ func (r *PostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignI
 	return tag.RowsAffected(), nil
 }
 
-// RescheduleLead unlocks a lead and returns it to QUEUED with a future next_attempt_at schedule (used for curfew holdoff)
-func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time) error {
+// RescheduleLead unlocks a lead and returns it to QUEUED with a future next_attempt_at schedule (used for curfew holdoff or retry backoff).
+// Enforces leaseToken fencing so a stale worker cannot unlock or reschedule a lead whose lease has been reassigned.
+func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time, leaseToken string) error {
+	if leaseToken == "" {
+		return fmt.Errorf("reschedule_lead: lease token required")
+	}
 	query := `
 		UPDATE leads
 		SET status = 'QUEUED',
@@ -380,9 +384,15 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 		    locked_by = NULL,
 		    locked_at = NULL,
 		    lease_token = NULL
-		WHERE id = $2;`
-	_, err := r.pool.Exec(ctx, query, nextAttempt, leadID)
-	return err
+		WHERE id = $2 AND status = 'DIALING' AND lease_token = $3;`
+	tag, err := r.pool.Exec(ctx, query, nextAttempt, leadID, leaseToken)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, got %d affected rows", leadID, tag.RowsAffected())
+	}
+	return nil
 }
 
 // IngestLeadsIdempotent enforces database-level idempotency via ON CONFLICT (campaign_id, phone_number) DO NOTHING RETURNING id.
@@ -487,8 +497,12 @@ func (r *PostgresRepository) RecordCallAttempt(ctx context.Context, attempt *mod
 }
 
 // RecordAttemptStart durably persists attempt increment and records an IN_PROGRESS attempt record prior to external carrier dial.
-// Uses leaseToken fencing to guarantee only the active leaseholder can initiate dialing.
+// Uses strict leaseToken fencing to guarantee only the active leaseholder can initiate dialing.
 func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int, leaseToken string) error {
+	if leaseToken == "" {
+		return fmt.Errorf("record_attempt_start: lease token required")
+	}
+
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed beginning tx for attempt start: %w", err)
@@ -499,7 +513,7 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		UPDATE leads
 		SET attempts = $1,
 		    last_attempt_at = NOW()
-		WHERE id = $2 AND status = 'DIALING' AND (lease_token = $3 OR $3 = '');`
+		WHERE id = $2 AND status = 'DIALING' AND lease_token = $3;`
 	tag1, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID, leaseToken)
 	if err != nil {
 		return fmt.Errorf("failed updating lead attempts in start tx: %w", err)
@@ -512,7 +526,7 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		INSERT INTO call_attempts (
 			id, campaign_id, lead_id, phone_number, status, created_at
 		) SELECT $1, campaign_id, id, phone_number, 'IN_PROGRESS', NOW()
-		FROM leads WHERE id = $2 AND status = 'DIALING' AND (lease_token = $3 OR $3 = '')
+		FROM leads WHERE id = $2 AND status = 'DIALING' AND lease_token = $3
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
 			created_at = EXCLUDED.created_at;`
@@ -527,8 +541,12 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 	return tx.Commit(ctx)
 }
 
-// RecordCallOutcomeTx atomically persists lead status and call attempt within a single database transaction with bounded retry and lease fencing
+// RecordCallOutcomeTx atomically persists lead status and call attempt within a single database transaction with bounded retry and strict lease fencing
 func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int, leaseToken string) error {
+	if leaseToken == "" {
+		return fmt.Errorf("record_call_outcome_tx: lease token required")
+	}
+
 	var lastErr error
 	backoff := 50 * time.Millisecond
 
@@ -550,13 +568,13 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 				    locked_by = NULL,
 				    locked_at = NULL,
 				    lease_token = NULL
-				WHERE id = $5 AND (lease_token = $6 OR $6 = '');`
+				WHERE id = $5 AND status = 'DIALING' AND lease_token = $6;`
 			tag, err := tx.Exec(ctx, updateQuery, string(status), reason, nextAttempt, attempts, leadID, leaseToken)
 			if err != nil {
 				return fmt.Errorf("failed updating lead status in tx: %w", err)
 			}
-			if leaseToken != "" && tag.RowsAffected() != 1 {
-				return fmt.Errorf("record_call_outcome_tx: stale lease token for lead %s, got %d affected rows", leadID, tag.RowsAffected())
+			if tag.RowsAffected() != 1 {
+				return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, got %d affected rows", leadID, tag.RowsAffected())
 			}
 
 			if attempt != nil {
@@ -595,7 +613,7 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 		if err == nil {
 			return nil
 		}
-		if leaseToken != "" && strings.Contains(err.Error(), "stale lease token") {
+		if strings.Contains(err.Error(), "stale lease token") {
 			return err
 		}
 		lastErr = err
@@ -786,7 +804,12 @@ func (r *MemoryPostgresRepository) GetActiveLeads(ctx context.Context, campaignI
 		}
 		return list[i].CreatedAt.Before(list[j].CreatedAt)
 	})
-	return list, nil
+	res := make([]*model.Lead, len(list))
+	for i, l := range list {
+		clone := *l
+		res[i] = &clone
+	}
+	return res, nil
 }
 
 func (r *MemoryPostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID string, limit int, workerID string) ([]*model.Lead, error) {
@@ -831,17 +854,30 @@ func (r *MemoryPostgresRepository) ClaimPendingLeads(ctx context.Context, campai
 	}
 
 	res := make([]*model.Lead, len(candidates))
-	copy(res, candidates)
+	for i, l := range candidates {
+		clone := *l
+		res[i] = &clone
+	}
 	return res, nil
 }
 
-func (r *MemoryPostgresRepository) RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time) error {
+func (r *MemoryPostgresRepository) RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time, leaseToken string) error {
+	if leaseToken == "" {
+		return fmt.Errorf("reschedule_lead: lease token required")
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	lead, ok := r.leads[leadID]
 	if !ok {
 		return model.ErrLeadNotFound
+	}
+	if lead.Status != model.StatusDialing {
+		return fmt.Errorf("reschedule_lead: lead %s is not in DIALING status (status=%s)", leadID, lead.Status)
+	}
+	if lead.LeaseToken != leaseToken {
+		return fmt.Errorf("reschedule_lead: stale lease token for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
 	lead.Status = model.StatusQueued
 	lead.NextAttemptAt = &nextAttempt
@@ -928,17 +964,21 @@ func (r *MemoryPostgresRepository) RecordCallAttempt(ctx context.Context, attemp
 }
 
 func (r *MemoryPostgresRepository) RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int, leaseToken string) error {
+	if leaseToken == "" {
+		return fmt.Errorf("record_attempt_start: lease token required")
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	lead, exists := r.leads[leadID]
 	if !exists {
-		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status, got 0", leadID)
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with lease token, got 0", leadID)
 	}
 	if lead.Status != model.StatusDialing {
 		return fmt.Errorf("record_attempt_start: lead %s is not in DIALING status (status=%s)", leadID, lead.Status)
 	}
-	if leaseToken != "" && lead.LeaseToken != "" && lead.LeaseToken != leaseToken {
+	if lead.LeaseToken != leaseToken {
 		return fmt.Errorf("record_attempt_start: lease token mismatch for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
 	lead.Attempts = attemptNum
@@ -957,6 +997,10 @@ func (r *MemoryPostgresRepository) RecordAttemptStart(ctx context.Context, leadI
 }
 
 func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int, leaseToken string) error {
+	if leaseToken == "" {
+		return fmt.Errorf("record_call_outcome_tx: lease token required")
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -964,8 +1008,11 @@ func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, lead
 	if !ok {
 		return model.ErrLeadNotFound
 	}
-	if leaseToken != "" && lead.LeaseToken != "" && lead.LeaseToken != leaseToken {
-		return fmt.Errorf("record_call_outcome_tx: lease token mismatch for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
+	if lead.Status != model.StatusDialing {
+		return fmt.Errorf("record_call_outcome_tx: lead %s is not in DIALING status (status=%s)", leadID, lead.Status)
+	}
+	if lead.LeaseToken != leaseToken {
+		return fmt.Errorf("record_call_outcome_tx: stale lease token for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
 
 	lead.Status = status

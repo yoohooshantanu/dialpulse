@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -410,6 +411,14 @@ func (e *CampaignEngine) ClaimBatchDistributed(ctx context.Context, limit int, w
 	return e.repo.ClaimPendingLeads(ctx, e.campaign.ID, limit, workerID)
 }
 
+// DispatchLeadDirect executes dispatchLead directly on a claimed lead.
+// Used for distributed testing and synchronous dispatch verification.
+func (e *CampaignEngine) DispatchLeadDirect(lead *model.Lead) {
+	e.wg.Add(1)
+	atomic.AddInt32(&e.inFlightDials, 1)
+	e.dispatchLead(lead)
+}
+
 func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	defer e.wg.Done()
 	defer atomic.AddInt32(&e.inFlightDials, -1)
@@ -440,11 +449,21 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
 
-			// Safely release row in PostgreSQL with bounded context
+			// Safely release row in PostgreSQL with bounded context and lease token fencing
 			reschedCtx, reschedCancel := context.WithTimeout(e.ctx, 2*time.Second)
-			if rErr := e.repo.RescheduleLead(reschedCtx, lead.ID, retryTime); rErr != nil {
+			if rErr := e.repo.RescheduleLead(reschedCtx, lead.ID, retryTime, lead.LeaseToken); rErr != nil {
 				logger.L.Error("failed_rescheduling_lead_after_dnc_error", "lead_id", lead.ID, "error", rErr)
 				metrics.DefaultMetrics.IncStorageErrors()
+				if strings.Contains(rErr.Error(), "stale lease token") {
+					e.mu.Lock()
+					for i, l := range e.pendingQueue {
+						if l.ID == lead.ID {
+							e.pendingQueue = append(e.pendingQueue[:i], e.pendingQueue[i+1:]...)
+							break
+						}
+					}
+					e.mu.Unlock()
+				}
 			}
 			reschedCancel()
 			return
@@ -496,9 +515,19 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 
 			if e.repo != nil {
 				reschedCtx, reschedCancel := context.WithTimeout(e.ctx, 2*time.Second)
-				if err := e.repo.RescheduleLead(reschedCtx, lead.ID, nextPermissible); err != nil {
+				if err := e.repo.RescheduleLead(reschedCtx, lead.ID, nextPermissible, lead.LeaseToken); err != nil {
 					metrics.DefaultMetrics.IncStorageErrors()
 					logger.L.Error("failed_rescheduling_timezone_blocked_lead", "lead_id", lead.ID, "error", err)
+					if strings.Contains(err.Error(), "stale lease token") {
+						e.mu.Lock()
+						for i, l := range e.pendingQueue {
+							if l.ID == lead.ID {
+								e.pendingQueue = append(e.pendingQueue[:i], e.pendingQueue[i+1:]...)
+								break
+							}
+						}
+						e.mu.Unlock()
+					}
 				}
 				reschedCancel()
 			}
@@ -526,6 +555,23 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		attemptCancel()
 		if err != nil {
 			metrics.DefaultMetrics.IncStorageErrors()
+
+			// Check if failure is due to stale lease fencing (lease expired and claimed by another worker)
+			errStr := err.Error()
+			isStaleLease := strings.Contains(errStr, "lease token mismatch") ||
+				strings.Contains(errStr, "stale lease token") ||
+				strings.Contains(errStr, "expected 1 row updated") ||
+				strings.Contains(errStr, "not in DIALING status")
+
+			if isStaleLease {
+				logger.L.Warn("stale_lease_detected_abandoning_local_lead", "lead_id", lead.ID, "attempt_id", attemptID, "lease_token", lead.LeaseToken, "error", err)
+				e.mu.Lock()
+				lead.Attempts--
+				e.mu.Unlock()
+				// Abort immediately: do NOT re-queue locally and do NOT mutate database row because another worker owns the lease!
+				return
+			}
+
 			logger.L.Error("failed_recording_attempt_start_aborting_dial", "lead_id", lead.ID, "attempt_id", attemptID, "error", err)
 
 			// Abort dial: revert in-memory attempt increment and reschedule safely
@@ -539,9 +585,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
 
-			// Safely release row lock in PostgreSQL with bounded context
+			// Safely release row lock in PostgreSQL with bounded context and lease token fencing
 			reschedCtx, reschedCancel := context.WithTimeout(e.ctx, 2*time.Second)
-			if rErr := e.repo.RescheduleLead(reschedCtx, lead.ID, retryTime); rErr != nil {
+			if rErr := e.repo.RescheduleLead(reschedCtx, lead.ID, retryTime, lead.LeaseToken); rErr != nil {
 				logger.L.Error("failed_rescheduling_lead_after_attempt_start_error", "lead_id", lead.ID, "error", rErr)
 				metrics.DefaultMetrics.IncStorageErrors()
 			}

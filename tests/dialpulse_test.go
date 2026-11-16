@@ -868,10 +868,15 @@ func TestAtomicTransactionalOutcomePersistence(t *testing.T) {
 		CampaignID:  camp.ID,
 		PhoneNumber: "+14155550099",
 		Priority:    10,
-		Status:      model.StatusDialing,
+		Status:      model.StatusQueued,
 		CreatedAt:   time.Now().UTC(),
 	}
 	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	claimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "test-worker")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming lead: %v", err)
+	}
 
 	attempt := &model.CallAttempt{
 		ID:             "attempt_tx_1",
@@ -884,8 +889,8 @@ func TestAtomicTransactionalOutcomePersistence(t *testing.T) {
 		CreatedAt:      time.Now().UTC(),
 	}
 
-	// Atomically persist outcome
-	err := repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attempt, 1, "")
+	// Atomically persist outcome with valid lease token
+	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attempt, 1, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("expected atomic outcome persistence to succeed: %v", err)
 	}
@@ -1569,9 +1574,9 @@ func TestTimezoneCurfewPersistentReschedule(t *testing.T) {
 		t.Fatalf("failed claiming lead: %v", err)
 	}
 
-	// Simulate curfew block reschedule via RescheduleLead
+	// Simulate curfew block reschedule via RescheduleLead with valid lease token
 	futureTime := time.Now().UTC().Add(8 * time.Hour)
-	err = repo.RescheduleLead(ctx, lead.ID, futureTime)
+	err = repo.RescheduleLead(ctx, lead.ID, futureTime, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("failed rescheduling lead: %v", err)
 	}
@@ -1926,5 +1931,351 @@ func TestLivePostgresDistributedLeaseFencingStaleWorkerRejected(t *testing.T) {
 	}
 	if finalStatus != "CONNECTED" || finalReason != "CONNECTED_NORMAL" {
 		t.Fatalf("expected lead status CONNECTED / CONNECTED_NORMAL from Worker B, got %s / %s", finalStatus, finalReason)
+	}
+}
+
+// TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease verifies that when a stale worker's
+// attempt-start fails due to lease expiration, its queue-level cleanup does NOT clear Worker B's active lease.
+func TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
+	repo := storage.NewMemoryPostgresRepository()
+	ctx := context.Background()
+
+	camp := &model.Campaign{
+		ID:                "camp_queue_fencing_mem",
+		AllocatedAgents:   5,
+		TargetAbandonRate: 0.025,
+		Status:            model.CampaignRunning,
+	}
+	_ = repo.SaveCampaign(ctx, camp)
+
+	lead := &model.Lead{
+		ID:          "lead_queue_fencing_mem",
+		CampaignID:  camp.ID,
+		PhoneNumber: "+14155550188",
+		Priority:    100,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	// 1. Worker A claims the lead
+	claimedA, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
+	if err != nil || len(claimedA) != 1 {
+		t.Fatalf("worker A failed claiming lead: %v", err)
+	}
+	leadA := claimedA[0]
+	leaseTokenA := leadA.LeaseToken
+	if leaseTokenA == "" {
+		t.Fatalf("expected non-empty lease token for Worker A")
+	}
+
+	// 2. Simulate lease expiration in repository
+	time.Sleep(10 * time.Millisecond)
+	reclaimedCount, err := repo.ReclaimExpiredLeases(ctx, camp.ID, 1*time.Millisecond)
+	if err != nil || reclaimedCount != 1 {
+		t.Fatalf("failed reclaiming expired lease: %v, count=%d", err, reclaimedCount)
+	}
+
+	// 3. Worker B claims the reclaimed lead
+	claimedB, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-B")
+	if err != nil || len(claimedB) != 1 {
+		t.Fatalf("worker B failed claiming reclaimed lead: %v", err)
+	}
+	leadB := claimedB[0]
+	leaseTokenB := leadB.LeaseToken
+	if leaseTokenB == "" || leaseTokenB == leaseTokenA {
+		t.Fatalf("expected distinct lease token for Worker B, got %s (A=%s)", leaseTokenB, leaseTokenA)
+	}
+
+	var carrierDialsA int32
+	dialerA := &callbackDialer{
+		dialFn: func(ctx context.Context, l *model.Lead) (model.CallStatus, time.Duration, error) {
+			atomic.AddInt32(&carrierDialsA, 1)
+			return model.StatusAnswered, 10 * time.Millisecond, nil
+		},
+	}
+	engineA := queue.NewCampaignEngine(camp, nil, nil, dialerA)
+	engineA.SetRepository(repo)
+
+	// 4. Stale Worker A dispatches leadA: attempt-start fails due to stale token, cleanup runs
+	engineA.DispatchLeadDirect(leadA)
+
+	// Carrier dial A must NEVER have been called
+	if atomic.LoadInt32(&carrierDialsA) != 0 {
+		t.Fatalf("stale Worker A must NOT initiate carrier dial, dialed %d times", carrierDialsA)
+	}
+
+	// 5. In repository: Worker B's lease MUST still be active and completely untouched!
+	activeLeads, err := repo.GetActiveLeads(ctx, camp.ID)
+	if err != nil || len(activeLeads) != 1 {
+		t.Fatalf("expected 1 active lead, got %v", activeLeads)
+	}
+	if activeLeads[0].Status != model.StatusDialing {
+		t.Fatalf("Worker A's error handling wiped out Worker B's lease! Status is %s (expected DIALING)", activeLeads[0].Status)
+	}
+	if activeLeads[0].LockedBy != "worker-node-B" {
+		t.Fatalf("expected LockedBy 'worker-node-B', got %s", activeLeads[0].LockedBy)
+	}
+	if activeLeads[0].LeaseToken != leaseTokenB {
+		t.Fatalf("expected LeaseToken %s, got %s", leaseTokenB, activeLeads[0].LeaseToken)
+	}
+
+	// 6. Active Worker B dispatches leadB: attempt-start and outcome succeed
+	var carrierDialsB int32
+	dialerB := &callbackDialer{
+		dialFn: func(ctx context.Context, l *model.Lead) (model.CallStatus, time.Duration, error) {
+			atomic.AddInt32(&carrierDialsB, 1)
+			return model.StatusAnswered, 10 * time.Millisecond, nil
+		},
+	}
+	engineB := queue.NewCampaignEngine(camp, nil, nil, dialerB)
+	engineB.SetRepository(repo)
+
+	engineB.DispatchLeadDirect(leadB)
+
+	if atomic.LoadInt32(&carrierDialsB) != 1 {
+		t.Fatalf("active Worker B must initiate carrier dial, dialed %d times", carrierDialsB)
+	}
+
+	// 7. Verify final disposition is CONNECTED
+	finalLeads, _ := repo.GetActiveLeads(ctx, camp.ID)
+	if len(finalLeads) != 0 {
+		t.Fatalf("expected 0 active queued/dialing leads after completion, got %d", len(finalLeads))
+	}
+}
+
+// TestLivePostgresRescheduleLeadFencing verifies that RescheduleLead strictly requires a valid non-empty
+// lease token and rejects stale tokens with zero rows affected.
+func TestLivePostgresRescheduleLeadFencing(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	camp := &model.Campaign{
+		ID:              "camp_resched_fence_" + uuid.NewString()[:8],
+		AllocatedAgents: 1,
+		Status:          model.CampaignRunning,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	lead := &model.Lead{
+		ID:          "lead_resched_fence_" + uuid.NewString()[:8],
+		CampaignID:  camp.ID,
+		PhoneNumber: fmt.Sprintf("+1415555%04d", rand.Intn(10000)),
+		Priority:    100,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	if err != nil {
+		t.Fatalf("failed ingesting lead: %v", err)
+	}
+
+	// 1. Claim lead -> receives valid leaseToken
+	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-resched-1")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming lead: %v", err)
+	}
+	leaseToken := claimed[0].LeaseToken
+	if leaseToken == "" {
+		t.Fatalf("expected non-empty lease token")
+	}
+
+	futureRetry := time.Now().UTC().Add(10 * time.Minute)
+
+	// 2. Empty lease token must be rejected up front
+	err = pgRepo.RescheduleLead(ctx, lead.ID, futureRetry, "")
+	if err == nil {
+		t.Fatalf("expected error when rescheduling with empty lease token, got nil")
+	}
+
+	// 3. Stale/invalid lease token must fail (0 rows affected)
+	err = pgRepo.RescheduleLead(ctx, lead.ID, futureRetry, "stale_token_abc123")
+	if err == nil {
+		t.Fatalf("expected error when rescheduling with stale lease token, got nil")
+	}
+
+	// Verify database row still has DIALING status and active lease
+	var curStatus, curToken string
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT status, lease_token FROM leads WHERE id = $1", lead.ID).Scan(&curStatus, &curToken)
+	if err != nil {
+		t.Fatalf("failed reading lead: %v", err)
+	}
+	if curStatus != "DIALING" || curToken != leaseToken {
+		t.Fatalf("lead state corrupted after rejected reschedule: status=%s, token=%s", curStatus, curToken)
+	}
+
+	// 4. Reschedule with valid lease token must succeed (1 row affected)
+	err = pgRepo.RescheduleLead(ctx, lead.ID, futureRetry, leaseToken)
+	if err != nil {
+		t.Fatalf("expected reschedule with valid lease token to succeed, got %v", err)
+	}
+
+	// Verify database row is returned to QUEUED with lease cleared
+	var finalStatus string
+	var finalLockedBy, finalToken *string
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT status, locked_by, lease_token FROM leads WHERE id = $1", lead.ID).Scan(&finalStatus, &finalLockedBy, &finalToken)
+	if err != nil {
+		t.Fatalf("failed reading rescheduled lead: %v", err)
+	}
+	if finalStatus != "QUEUED" || finalLockedBy != nil || finalToken != nil {
+		t.Fatalf("expected QUEUED with cleared lease, got status=%s, lockedBy=%v, token=%v", finalStatus, finalLockedBy, finalToken)
+	}
+}
+
+// TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease tests the end-to-end
+// CampaignEngine queue error-recovery path against real PostgreSQL:
+// 1. Worker A claims lead via ClaimPendingLeads -> Token A.
+// 2. Database expires lease (locked_at set to 3 minutes ago).
+// 3. Worker B reclaims expired lead via ClaimPendingLeads -> Token B.
+// 4. Stale Worker A's engine dispatches lead with Token A:
+//    - RecordAttemptStart fails due to lease token mismatch.
+//    - Worker A detects stale lease and abandons local lead WITHOUT calling RescheduleLead.
+// 5. In PostgreSQL: verify Worker B's lease is untouched (status DIALING, lease_token == Token B).
+// 6. Active Worker B's engine dispatches lead with Token B: attempt-start and outcome succeed.
+// 7. In PostgreSQL: verify final status is CONNECTED with 1 attempt.
+func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	camp := &model.Campaign{
+		ID:              "camp_queue_live_" + uuid.NewString()[:8],
+		AllocatedAgents: 5,
+		Status:          model.CampaignRunning,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	lead := &model.Lead{
+		ID:          "lead_queue_live_" + uuid.NewString()[:8],
+		CampaignID:  camp.ID,
+		PhoneNumber: fmt.Sprintf("+1415555%04d", rand.Intn(10000)),
+		Priority:    100,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	if err != nil {
+		t.Fatalf("failed ingesting lead: %v", err)
+	}
+
+	// 1. Worker A claims lead -> Token A
+	claimedA, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
+	if err != nil || len(claimedA) != 1 {
+		t.Fatalf("worker A failed claiming lead: %v", err)
+	}
+	leadA := claimedA[0]
+	leaseTokenA := leadA.LeaseToken
+	if leaseTokenA == "" {
+		t.Fatalf("expected non-empty leaseToken for Worker A")
+	}
+
+	// 2. Simulate lease expiration in PostgreSQL
+	_, err = pgRepo.Pool().Exec(ctx,
+		"UPDATE leads SET locked_at = NOW() - INTERVAL '3 minutes' WHERE id = $1", lead.ID)
+	if err != nil {
+		t.Fatalf("failed simulating expired lease: %v", err)
+	}
+
+	// 3. Worker B reclaims expired lead -> Token B
+	claimedB, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-B")
+	if err != nil || len(claimedB) != 1 {
+		t.Fatalf("worker B failed reclaiming lead: %v", err)
+	}
+	leadB := claimedB[0]
+	leaseTokenB := leadB.LeaseToken
+	if leaseTokenB == "" || leaseTokenB == leaseTokenA {
+		t.Fatalf("expected distinct leaseToken for Worker B, got %s (A=%s)", leaseTokenB, leaseTokenA)
+	}
+
+	var carrierDialsA int32
+	dialerA := &callbackDialer{
+		dialFn: func(ctx context.Context, l *model.Lead) (model.CallStatus, time.Duration, error) {
+			atomic.AddInt32(&carrierDialsA, 1)
+			return model.StatusAnswered, 10 * time.Millisecond, nil
+		},
+	}
+	engineA := queue.NewCampaignEngine(camp, nil, nil, dialerA)
+	engineA.SetRepository(pgRepo)
+
+	// 4. Stale Worker A dispatches leadA: attempt-start rejected in PostgreSQL, cleanup runs
+	engineA.DispatchLeadDirect(leadA)
+
+	if atomic.LoadInt32(&carrierDialsA) != 0 {
+		t.Fatalf("stale Worker A must NOT initiate carrier dial, dialed %d times", carrierDialsA)
+	}
+
+	// 5. Query PostgreSQL directly: Worker B's lease MUST still be active and untouched!
+	var currentStatus, currentLockedBy, currentLeaseToken string
+	err = pgRepo.Pool().QueryRow(ctx,
+		"SELECT status, locked_by, lease_token FROM leads WHERE id = $1", lead.ID).
+		Scan(&currentStatus, &currentLockedBy, &currentLeaseToken)
+	if err != nil {
+		t.Fatalf("failed querying lead after stale worker cleanup: %v", err)
+	}
+	if currentStatus != "DIALING" {
+		t.Fatalf("Stale Worker A reset lead status to %s (expected DIALING held by Worker B)!", currentStatus)
+	}
+	if currentLockedBy != "worker-node-B" {
+		t.Fatalf("Stale Worker A corrupted locked_by to %s (expected 'worker-node-B')!", currentLockedBy)
+	}
+	if currentLeaseToken != leaseTokenB {
+		t.Fatalf("Stale Worker A corrupted lease_token to %s (expected '%s')!", currentLeaseToken, leaseTokenB)
+	}
+
+	// 6. Active Worker B dispatches leadB: attempt-start and outcome succeed
+	var carrierDialsB int32
+	dialerB := &callbackDialer{
+		dialFn: func(ctx context.Context, l *model.Lead) (model.CallStatus, time.Duration, error) {
+			atomic.AddInt32(&carrierDialsB, 1)
+			return model.StatusAnswered, 10 * time.Millisecond, nil
+		},
+	}
+	engineB := queue.NewCampaignEngine(camp, nil, nil, dialerB)
+	engineB.SetRepository(pgRepo)
+
+	engineB.DispatchLeadDirect(leadB)
+
+	if atomic.LoadInt32(&carrierDialsB) != 1 {
+		t.Fatalf("active Worker B must initiate carrier dial, dialed %d times", carrierDialsB)
+	}
+
+	// 7. Verify final disposition in PostgreSQL is CONNECTED
+	var finalStatus string
+	var finalAttempts int
+	err = pgRepo.Pool().QueryRow(ctx,
+		"SELECT status, attempts FROM leads WHERE id = $1", lead.ID).
+		Scan(&finalStatus, &finalAttempts)
+	if err != nil {
+		t.Fatalf("failed querying final lead status: %v", err)
+	}
+	if finalStatus != "CONNECTED" || finalAttempts != 1 {
+		t.Fatalf("expected final lead status CONNECTED with attempts=1, got %s (attempts=%d)", finalStatus, finalAttempts)
 	}
 }
