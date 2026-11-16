@@ -2462,3 +2462,127 @@ func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing
 		t.Fatalf("expected attempts=1 after valid attempt-start, got %d (err: %v)", dbAttempts, err)
 	}
 }
+
+// TestLivePostgresAttemptStartLockWaitExpiryRejection verifies that when a transaction waits on a row lock,
+// lease expiry is evaluated post-lock-acquisition using clock_timestamp(), not the stale transaction start time.
+// If Tx 1 holds the lock and backdates locked_at beyond DefaultLeaseTTL before committing, Worker A's blocked
+// RecordAttemptStart MUST be rejected upon acquiring the lock, inserting 0 attempts and incrementing 0 attempts.
+func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	camp := &model.Campaign{
+		ID:              "camp_lock_wait_" + uuid.NewString()[:8],
+		AllocatedAgents: 1,
+		Status:          model.CampaignRunning,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	lead := &model.Lead{
+		ID:          "lead_lock_wait_" + uuid.NewString()[:8],
+		CampaignID:  camp.ID,
+		PhoneNumber: fmt.Sprintf("+1415555%04d", rand.Intn(10000)),
+		Priority:    100,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	if err != nil {
+		t.Fatalf("failed ingesting lead: %v", err)
+	}
+
+	// 1. Worker A claims the lead and acquires a valid leaseToken
+	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming lead: %v", err)
+	}
+	leaseTokenA := claimed[0].LeaseToken
+	if leaseTokenA == "" {
+		t.Fatalf("expected non-empty lease token")
+	}
+
+	// 2. Tx 1 starts and acquires an exclusive row lock on the lead row
+	tx1, err := pgRepo.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatalf("failed to begin tx1: %v", err)
+	}
+	defer tx1.Rollback(ctx)
+
+	var lockedID string
+	err = tx1.QueryRow(ctx, "SELECT id FROM leads WHERE id = $1 FOR UPDATE", lead.ID).Scan(&lockedID)
+	if err != nil {
+		t.Fatalf("failed acquiring row lock in tx1: %v", err)
+	}
+
+	// 3. Worker A initiates RecordAttemptStart in a background goroutine.
+	// It begins its transaction and attempts SELECT ... FOR UPDATE, which BLOCKS on Tx 1's lock.
+	attemptID := uuid.NewString()
+	attemptStartDone := make(chan error, 1)
+	go func() {
+		attemptStartDone <- pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, leaseTokenA)
+	}()
+
+	// Verify Worker A is genuinely blocked waiting on the row lock
+	select {
+	case earlyErr := <-attemptStartDone:
+		t.Fatalf("expected RecordAttemptStart to block on row lock, but completed prematurely: %v", earlyErr)
+	case <-time.After(300 * time.Millisecond):
+		// Goroutine successfully blocked on Tx 1 row lock
+	}
+
+	// 4. While Worker A is waiting for the row lock, Tx 1 backdates locked_at past DefaultLeaseTTL (3 minutes ago)
+	_, err = tx1.Exec(ctx, "UPDATE leads SET locked_at = clock_timestamp() - INTERVAL '3 minutes' WHERE id = $1", lead.ID)
+	if err != nil {
+		t.Fatalf("failed backdating locked_at in tx1: %v", err)
+	}
+
+	// 5. Tx 1 commits, releasing the row lock to Worker A
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("failed committing tx1: %v", err)
+	}
+
+	// 6. Worker A unblocks, acquires row lock, evaluates lease validity via clock_timestamp(), and MUST FAIL
+	select {
+	case startErr := <-attemptStartDone:
+		if startErr == nil {
+			t.Fatalf("expected RecordAttemptStart to fail due to lock-wait lease expiry, but succeeded!")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for RecordAttemptStart to finish after row lock released")
+	}
+
+	// 7. Verify in PostgreSQL that:
+	// - lead attempts counter remains 0
+	// - no call_attempts row was inserted
+	var dbAttempts int
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT attempts FROM leads WHERE id = $1", lead.ID).Scan(&dbAttempts)
+	if err != nil {
+		t.Fatalf("failed querying lead attempts: %v", err)
+	}
+	if dbAttempts != 0 {
+		t.Fatalf("expected attempts to remain 0 after lock-wait expiry rejection, got %d", dbAttempts)
+	}
+
+	var attemptCount int
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM call_attempts WHERE id = $1", attemptID).Scan(&attemptCount)
+	if err != nil {
+		t.Fatalf("failed querying call_attempts count: %v", err)
+	}
+	if attemptCount != 0 {
+		t.Fatalf("expected 0 call_attempts inserted for lock-wait expired attempt-start, got %d", attemptCount)
+	}
+}

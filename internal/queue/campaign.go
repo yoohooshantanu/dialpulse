@@ -23,13 +23,13 @@ import (
 const (
 	// LeaseTTL defines the maximum permissible time a worker holds a claimed lead in DIALING state.
 	// Expired leases (>2m) are eligible for reclamation and rejected by fenced mutations.
-	LeaseTTL = 2 * time.Minute
+	LeaseTTL = model.DefaultLeaseTTL
 
 	// TelephonyDialTimeout defines the strict bounded deadline for carrier trunk dialing.
 	// Because TelephonyDialTimeout (10s) is strictly bounded well within LeaseTTL (2m),
 	// an active dial completes before lease expiry. For streaming audio calls lasting >2m,
 	// background lease-heartbeat renewal should refresh locked_at every 30 seconds.
-	TelephonyDialTimeout = 10 * time.Second
+	TelephonyDialTimeout = model.TelephonyDialTimeout
 )
 
 type TelephonyDialer interface {

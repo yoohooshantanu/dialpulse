@@ -14,6 +14,16 @@ var (
 	ErrInvalidCampaignConfig = errors.New("invalid campaign configuration")
 )
 
+const (
+	// DefaultLeaseTTL specifies the authoritative lease duration (2 minutes) for a claimed lead in DIALING status.
+	// Used consistently across claiming, expiration recovery, and lease fencing validation.
+	DefaultLeaseTTL = 2 * time.Minute
+
+	// TelephonyDialTimeout specifies the strict bounded deadline (10 seconds) for external carrier dialing.
+	// Strictly bounded well within DefaultLeaseTTL to guarantee an active dial completes before lease expiry.
+	TelephonyDialTimeout = 10 * time.Second
+)
+
 type CallStatus string
 
 const (

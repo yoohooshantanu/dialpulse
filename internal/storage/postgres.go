@@ -210,6 +210,7 @@ func (r *PostgresRepository) UpdateCampaignStatus(ctx context.Context, campaignI
 }
 
 func (r *PostgresRepository) GetActiveLeads(ctx context.Context, campaignID string) ([]*model.Lead, error) {
+	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 	query := `
 		SELECT id, campaign_id, phone_number, name, priority,
 		       status, attempts, max_attempts, failure_reason,
@@ -217,11 +218,11 @@ func (r *PostgresRepository) GetActiveLeads(ctx context.Context, campaignID stri
 		FROM leads
 		WHERE campaign_id = $1 AND (
 			status IN ('QUEUED', 'DRAFT')
-			OR (status = 'DIALING' AND locked_at IS NOT NULL AND locked_at < NOW() - INTERVAL '2 minutes')
+			OR (status = 'DIALING' AND locked_at IS NOT NULL AND locked_at < clock_timestamp() - $2::interval)
 		)
 		ORDER BY priority DESC, created_at ASC;`
 
-	rows, err := r.pool.Query(ctx, query, campaignID)
+	rows, err := r.pool.Query(ctx, query, campaignID, intervalStr)
 	if err != nil {
 		return nil, err
 	}
@@ -273,19 +274,21 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 	}
 	defer tx.Rollback(ctx)
 
+	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
+
 	claimQuery := `
 		UPDATE leads
 		SET status = 'DIALING',
 		    locked_by = $1,
-		    locked_at = NOW(),
+		    locked_at = clock_timestamp(),
 		    lease_token = md5(random()::text || clock_timestamp()::text)
 		WHERE id IN (
 			SELECT id FROM leads
 			WHERE campaign_id = $2
 			  AND (
-			    ((status = 'QUEUED' OR status = 'DRAFT') AND (next_attempt_at IS NULL OR next_attempt_at <= NOW()))
+			    ((status = 'QUEUED' OR status = 'DRAFT') AND (next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()))
 			    OR
-			    (status = 'DIALING' AND locked_at IS NOT NULL AND locked_at < NOW() - INTERVAL '2 minutes')
+			    (status = 'DIALING' AND locked_at IS NOT NULL AND locked_at < clock_timestamp() - $4::interval)
 			  )
 			ORDER BY priority DESC, created_at ASC
 			LIMIT $3
@@ -295,7 +298,7 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 		          status, attempts, max_attempts, failure_reason,
 		          locked_by, locked_at, last_attempt_at, next_attempt_at, created_at, lease_token;`
 
-	rows, err := tx.Query(ctx, claimQuery, workerID, campaignID, limit)
+	rows, err := tx.Query(ctx, claimQuery, workerID, campaignID, limit, intervalStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed querying claimable leads: %w", err)
 	}
@@ -346,8 +349,8 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 
 // ReclaimExpiredLeases resets DIALING leads with expired leases (> leaseTTL) back to QUEUED for crash recovery
 func (r *PostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error) {
-	if leaseTTL < 0 {
-		leaseTTL = 2 * time.Minute
+	if leaseTTL <= 0 {
+		leaseTTL = model.DefaultLeaseTTL
 	}
 	intervalSec := float64(leaseTTL.Milliseconds()) / 1000.0
 	intervalStr := fmt.Sprintf("%f seconds", intervalSec)
@@ -361,7 +364,7 @@ func (r *PostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignI
 		WHERE campaign_id = $1
 		  AND status = 'DIALING'
 		  AND locked_at IS NOT NULL
-		  AND locked_at < NOW() - $2::interval;`
+		  AND locked_at < clock_timestamp() - $2::interval;`
 
 	tag, err := r.pool.Exec(ctx, query, campaignID, intervalStr)
 	if err != nil {
@@ -371,31 +374,61 @@ func (r *PostgresRepository) ReclaimExpiredLeases(ctx context.Context, campaignI
 }
 
 // RescheduleLead unlocks a lead and returns it to QUEUED with a future next_attempt_at schedule (used for curfew holdoff or retry backoff).
-// Enforces leaseToken fencing so a stale worker cannot unlock or reschedule a lead whose lease has been reassigned.
+// Enforces leaseToken fencing with row locking and clock_timestamp() so a stale worker cannot unlock or reschedule a lead whose lease expired or was reassigned.
 func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time, leaseToken string) error {
 	if leaseToken == "" {
 		return fmt.Errorf("reschedule_lead: lease token required")
 	}
-	query := `
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin tx for reschedule: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
+
+	// Step 1: Acquire row lock first with FOR UPDATE, then evaluate lease validity against clock_timestamp()
+	lockQuery := `
+		SELECT status, lease_token,
+		       (locked_at IS NOT NULL AND locked_at >= clock_timestamp() - $2::interval) AS lease_valid
+		FROM leads
+		WHERE id = $1
+		FOR UPDATE;`
+
+	var currentStatus string
+	var currentToken *string
+	var leaseValid bool
+	err = tx.QueryRow(ctx, lockQuery, leadID, intervalStr).Scan(&currentStatus, &currentToken, &leaseValid)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, lead not found", leadID)
+		}
+		return fmt.Errorf("failed locking lead for reschedule: %w", err)
+	}
+
+	if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || !leaseValid {
+		return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, got 0 affected rows", leadID)
+	}
+
+	// Step 2: Reschedule lead under exclusive lock
+	updateQuery := `
 		UPDATE leads
 		SET status = 'QUEUED',
 		    next_attempt_at = $1,
 		    locked_by = NULL,
 		    locked_at = NULL,
 		    lease_token = NULL
-		WHERE id = $2
-		  AND status = 'DIALING'
-		  AND lease_token = $3
-		  AND locked_at IS NOT NULL
-		  AND locked_at >= NOW() - INTERVAL '2 minutes';`
-	tag, err := r.pool.Exec(ctx, query, nextAttempt, leadID, leaseToken)
+		WHERE id = $2;`
+	tag, err := tx.Exec(ctx, updateQuery, nextAttempt, leadID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, got %d affected rows", leadID, tag.RowsAffected())
 	}
-	return nil
+
+	return tx.Commit(ctx)
 }
 
 // IngestLeadsIdempotent enforces database-level idempotency via ON CONFLICT (campaign_id, phone_number) DO NOTHING RETURNING id.
@@ -486,7 +519,7 @@ func (r *PostgresRepository) RecordCallAttempt(ctx context.Context, attempt *mod
 }
 
 // RecordAttemptStart durably persists attempt increment and records an IN_PROGRESS attempt record prior to external carrier dial.
-// Uses strict leaseToken fencing to guarantee only the active leaseholder can initiate dialing.
+// Uses lock-then-check with clock_timestamp() and SELECT ... FOR UPDATE to eliminate lock-wait expiry races.
 func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int, leaseToken string) error {
 	if leaseToken == "" {
 		return fmt.Errorf("record_attempt_start: lease token required")
@@ -498,33 +531,56 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 	}
 	defer tx.Rollback(ctx)
 
+	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
+
+	// Step 1: Acquire exclusive row lock first, evaluating lease validity against post-lock clock_timestamp()
+	lockQuery := `
+		SELECT status, lease_token,
+		       (locked_at IS NOT NULL AND locked_at >= clock_timestamp() - $2::interval) AS lease_valid
+		FROM leads
+		WHERE id = $1
+		FOR UPDATE;`
+
+	var currentStatus string
+	var currentToken *string
+	var leaseValid bool
+	err = tx.QueryRow(ctx, lockQuery, leadID, intervalStr).Scan(&currentStatus, &currentToken, &leaseValid)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("record_attempt_start: lead %s not found", leadID)
+		}
+		return fmt.Errorf("failed locking lead for attempt start: %w", err)
+	}
+
+	if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || !leaseValid {
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got 0", leadID)
+	}
+
+	// Step 2: Under the row lock, refresh locked_at and record attempt number using clock_timestamp()
 	updateLeadQuery := `
 		UPDATE leads
 		SET attempts = $1,
-		    last_attempt_at = NOW(),
-		    locked_at = NOW()
-		WHERE id = $2
-		  AND status = 'DIALING'
-		  AND lease_token = $3
-		  AND locked_at IS NOT NULL
-		  AND locked_at >= NOW() - INTERVAL '2 minutes';`
-	tag1, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID, leaseToken)
+		    last_attempt_at = clock_timestamp(),
+		    locked_at = clock_timestamp()
+		WHERE id = $2;`
+	tag1, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID)
 	if err != nil {
 		return fmt.Errorf("failed updating lead attempts in start tx: %w", err)
 	}
 	if tag1.RowsAffected() != 1 {
-		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got %d", leadID, tag1.RowsAffected())
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s, got %d", leadID, tag1.RowsAffected())
 	}
 
+	// Step 3: Insert the IN_PROGRESS attempt record
 	insertAttemptQuery := `
 		INSERT INTO call_attempts (
 			id, campaign_id, lead_id, phone_number, status, created_at
-		) SELECT $1, campaign_id, id, phone_number, 'IN_PROGRESS', NOW()
-		FROM leads WHERE id = $2 AND status = 'DIALING' AND lease_token = $3
+		) SELECT $1, campaign_id, id, phone_number, 'IN_PROGRESS', clock_timestamp()
+		FROM leads WHERE id = $2
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
 			created_at = EXCLUDED.created_at;`
-	tag2, err := tx.Exec(ctx, insertAttemptQuery, attemptID, leadID, leaseToken)
+	tag2, err := tx.Exec(ctx, insertAttemptQuery, attemptID, leadID)
 	if err != nil {
 		return fmt.Errorf("failed inserting in-progress attempt: %w", err)
 	}
@@ -543,6 +599,7 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 
 	var lastErr error
 	backoff := 50 * time.Millisecond
+	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
 	for i := 0; i < 3; i++ {
 		err := func() error {
@@ -552,22 +609,41 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 			}
 			defer tx.Rollback(ctx)
 
+			// Step 1: Acquire row lock first, evaluating lease validity against post-lock clock_timestamp()
+			lockQuery := `
+				SELECT status, lease_token,
+				       (locked_at IS NOT NULL AND locked_at >= clock_timestamp() - $2::interval) AS lease_valid
+				FROM leads
+				WHERE id = $1
+				FOR UPDATE;`
+
+			var currentStatus string
+			var currentToken *string
+			var leaseValid bool
+			err = tx.QueryRow(ctx, lockQuery, leadID, intervalStr).Scan(&currentStatus, &currentToken, &leaseValid)
+			if err != nil {
+				if err == pgx.ErrNoRows {
+					return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, lead not found", leadID)
+				}
+				return fmt.Errorf("failed locking lead for outcome tx: %w", err)
+			}
+
+			if currentStatus != "DIALING" || currentToken == nil || *currentToken != leaseToken || !leaseValid {
+				return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, got 0 affected rows", leadID)
+			}
+
 			updateQuery := `
 				UPDATE leads
 				SET status = $1,
 				    failure_reason = $2,
 				    next_attempt_at = $3,
-				    last_attempt_at = NOW(),
+				    last_attempt_at = clock_timestamp(),
 				    attempts = $4,
 				    locked_by = NULL,
 				    locked_at = NULL,
 				    lease_token = NULL
-				WHERE id = $5
-				  AND status = 'DIALING'
-				  AND lease_token = $6
-				  AND locked_at IS NOT NULL
-				  AND locked_at >= NOW() - INTERVAL '2 minutes';`
-			tag, err := tx.Exec(ctx, updateQuery, string(status), reason, nextAttempt, attempts, leadID, leaseToken)
+				WHERE id = $5;`
+			tag, err := tx.Exec(ctx, updateQuery, string(status), reason, nextAttempt, attempts, leadID)
 			if err != nil {
 				return fmt.Errorf("failed updating lead status in tx: %w", err)
 			}
@@ -819,7 +895,7 @@ func (r *MemoryPostgresRepository) ClaimPendingLeads(ctx context.Context, campai
 	}
 
 	now := time.Now().UTC()
-	const leaseTTL = 2 * time.Minute
+	leaseTTL := model.DefaultLeaseTTL
 	var candidates []*model.Lead
 	for _, l := range r.leads {
 		if l.CampaignID == campaignID {
@@ -878,7 +954,7 @@ func (r *MemoryPostgresRepository) RescheduleLead(ctx context.Context, leadID st
 		return fmt.Errorf("reschedule_lead: stale lease token for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
 	now := time.Now().UTC()
-	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > 2*time.Minute {
+	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > model.DefaultLeaseTTL {
 		return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, got 0 affected rows (lease expired)", leadID)
 	}
 	lead.Status = model.StatusQueued
@@ -893,8 +969,8 @@ func (r *MemoryPostgresRepository) ReclaimExpiredLeases(ctx context.Context, cam
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if leaseTTL < 0 {
-		leaseTTL = 2 * time.Minute
+	if leaseTTL <= 0 {
+		leaseTTL = model.DefaultLeaseTTL
 	}
 	now := time.Now().UTC()
 	var count int64
@@ -961,7 +1037,7 @@ func (r *MemoryPostgresRepository) RecordAttemptStart(ctx context.Context, leadI
 		return fmt.Errorf("record_attempt_start: lease token mismatch for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
 	now := time.Now().UTC()
-	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > 2*time.Minute {
+	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > model.DefaultLeaseTTL {
 		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got 0 (lease expired)", leadID)
 	}
 	lead.Attempts = attemptNum
@@ -998,7 +1074,7 @@ func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, lead
 		return fmt.Errorf("record_call_outcome_tx: stale lease token for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
 	now := time.Now().UTC()
-	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > 2*time.Minute {
+	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > model.DefaultLeaseTTL {
 		return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, got 0 affected rows (lease expired)", leadID)
 	}
 
