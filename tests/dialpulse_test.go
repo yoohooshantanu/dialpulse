@@ -2630,6 +2630,29 @@ func TestTCPACurfewTableDriven(t *testing.T) {
 			expectErr:   nil,
 			description: "Phoenix is 20:30 (8:30 PM, allowed), whereas Denver is 21:30 (prohibited)",
 		},
+		// Area code 928 covers both the Navajo Nation (observes DST) and Hopi / rural Arizona (non-DST).
+		// DialPulse requires intersection: both zones must be within legal window.
+		{
+			name:        "Arizona 928 summer evening prohibited in Navajo Nation (21:30 Navajo vs 20:30 Phoenix)",
+			phone:       "+1 (928) 555-0100",
+			instant:     parseUTC("2026-06-16T03:30:00Z"),
+			expectErr:   model.ErrTimezoneRestricted,
+			description: "Navajo Nation local time is 21:30 (past 9 PM curfew) even though Phoenix is 20:30; 928 intersection guard must prohibit",
+		},
+		{
+			name:        "Arizona 928 summer evening allowed in both zones (20:30 Navajo and 19:30 Phoenix)",
+			phone:       "+1 (928) 555-0100",
+			instant:     parseUTC("2026-06-16T02:30:00Z"),
+			expectErr:   nil,
+			description: "Both Navajo Nation (20:30) and Phoenix (19:30) are before 9 PM curfew; allowed",
+		},
+		{
+			name:        "Arizona 928 summer morning allowed in both zones (09:30 Navajo and 08:30 Phoenix)",
+			phone:       "+1 (928) 555-0100",
+			instant:     parseUTC("2026-06-15T15:30:00Z"),
+			expectErr:   nil,
+			description: "Both Navajo Nation (09:30) and Phoenix (08:30) are after 8 AM curfew; allowed",
+		},
 		// Unknown area codes fail-closed with ErrUnknownTimezone
 		{
 			name:        "Unknown area code 999 fails closed",
@@ -3045,10 +3068,11 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 	})
 
 	// Subcase 3: Lock-Wait Race:
-	// Blocker Tx holds row lock (FOR UPDATE). Worker A calls RecordCallOutcomeTx and blocks.
-	// We verify Worker A is blocked using pg_stat_activity.
-	// While Worker A is waiting, Blocker Tx sets locked_at into past WITHOUT altering lease_token, then commits.
-	// Worker A unblocks and must fail with model.ErrStaleLease and 0 call_attempts rows inserted.
+	// Demonstrates PostgreSQL Read Committed semantics on unmodified row locks:
+	// A single UPDATE checks its WHERE clause when it scans the row, before waiting for a row lock held by another transaction.
+	// If the blocker holds an exclusive lock (FOR UPDATE) without modifying the row and the lease expires during the wait,
+	// PostgreSQL does NOT re-check the WHERE clause upon unblocking!
+	// Our two-step pattern (SELECT ... FOR UPDATE then UPDATE with clock_timestamp()) guarantees the check happens AFTER the wait.
 	t.Run("LockWaitRace", func(t *testing.T) {
 		leadID := "lead_fence_lockwait_" + uuid.NewString()[:8]
 		lead := &model.Lead{
@@ -3068,7 +3092,17 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 		}
 		leadItem := claimed[0]
 
-		// 1. Blocker transaction begins and acquires exclusive row lock on the lead
+		// 1. Set locked_at near the 2-minute (120s) expiry: 119 seconds ago, without changing lease_token
+		_, err = pgRepo.Pool().Exec(ctx, `
+			UPDATE leads
+			SET locked_at = clock_timestamp() - interval '119 seconds'
+			WHERE id = $1;
+		`, leadID)
+		if err != nil {
+			t.Fatalf("failed setting locked_at near expiry: %v", err)
+		}
+
+		// 2. Blocker transaction begins and acquires exclusive row lock on the lead WITHOUT modifying the row
 		blockerTx, err := pgRepo.Pool().Begin(ctx)
 		if err != nil {
 			t.Fatalf("failed starting blocker tx: %v", err)
@@ -3081,7 +3115,7 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("blocker tx failed acquiring row lock: %v", err)
 		}
 
-		// 2. Worker A executes RecordCallOutcomeTx in a background goroutine, which blocks waiting for the row lock
+		// 3. Worker A executes RecordCallOutcomeTx in a background goroutine, which blocks waiting for the row lock
 		attemptID := uuid.NewString()
 		attempt := &model.CallAttempt{
 			ID:             attemptID,
@@ -3098,14 +3132,14 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			outcomeDone <- err
 		}()
 
-		// 3. Verify via pg_stat_activity that Worker A is actively blocked waiting on the lock
+		// 4. Verify via pg_stat_activity that Worker A is actively blocked waiting on the lock
 		waitingOnLock := false
 		for poll := 0; poll < 50; poll++ {
 			var waitEventType, waitEvent *string
 			qErr := pgRepo.Pool().QueryRow(ctx, `
 				SELECT wait_event_type, wait_event
 				FROM pg_stat_activity
-				WHERE query LIKE '%leads%FOR UPDATE%'
+				WHERE (query LIKE '%leads%FOR UPDATE%' OR query LIKE '%UPDATE leads%')
 				  AND pid != pg_backend_pid()
 				  AND state = 'active'
 				LIMIT 1;
@@ -3120,26 +3154,20 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("timed out waiting for pg_stat_activity to report wait_event_type = 'Lock' for Worker A")
 		}
 
-		// 4. While Worker A is waiting, blockerTx updates locked_at to 5 minutes ago WITHOUT changing lease_token
-		_, err = blockerTx.Exec(ctx, `
-			UPDATE leads
-			SET locked_at = clock_timestamp() - interval '5 minutes'
-			WHERE id = $1;
-		`, leadID)
-		if err != nil {
-			t.Fatalf("failed setting locked_at into past in blocker tx: %v", err)
-		}
+		// 5. BlockerTx holds the lock across the 2-minute lease boundary without modifying the row
+		time.Sleep(1500 * time.Millisecond)
 
-		// 5. BlockerTx commits, releasing the lock to Worker A
+		// 6. BlockerTx commits, releasing the lock WITHOUT having modified the row
 		if err := blockerTx.Commit(ctx); err != nil {
 			t.Fatalf("failed committing blocker tx: %v", err)
 		}
 
-		// 6. Worker A unblocks, rechecks lease validity at execution time, and must fail with model.ErrStaleLease
+		// 7. Worker A unblocks. Under single UPDATE, PostgreSQL does not re-check WHERE and succeeds (bug).
+		// Under lock-then-check (SELECT FOR UPDATE then UPDATE), Worker A evaluates clock_timestamp() AFTER the wait, failing with ErrStaleLease.
 		select {
 		case outcomeErr := <-outcomeDone:
 			if outcomeErr == nil {
-				t.Fatalf("expected RecordCallOutcomeTx to fail due to lock-wait lease expiry, but succeeded!")
+				t.Fatalf("expected RecordCallOutcomeTx to fail due to lock-wait lease expiry on unmodified row lock, but succeeded!")
 			}
 			if !errors.Is(outcomeErr, model.ErrStaleLease) {
 				t.Fatalf("expected error wrapping model.ErrStaleLease, got: %v", outcomeErr)
@@ -3148,7 +3176,7 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("timed out waiting for Worker A RecordCallOutcomeTx to unblock after lock release")
 		}
 
-		// 7. Verify no call_attempts row was inserted
+		// 8. Assert no call_attempts row was inserted
 		var attemptCount int
 		err = pgRepo.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM call_attempts WHERE id = $1", attemptID).Scan(&attemptCount)
 		if err != nil {

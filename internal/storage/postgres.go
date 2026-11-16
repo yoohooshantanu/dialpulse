@@ -282,7 +282,7 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 		SET status = 'DIALING',
 		    locked_by = $1,
 		    locked_at = clock_timestamp(),
-		    lease_token = md5(random()::text || clock_timestamp()::text)
+		    lease_token = gen_random_uuid()::text
 		WHERE id IN (
 			SELECT id FROM leads
 			WHERE campaign_id = $2

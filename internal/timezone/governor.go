@@ -9,7 +9,7 @@ import (
 
 // TimezoneGovernor enforces legal outbound dialing windows based on recipient area codes (TCPA 08:00 - 21:00)
 type TimezoneGovernor struct {
-	areaCodeZones map[string]*time.Location
+	areaCodeZones map[string][]*time.Location
 	defaultLoc    *time.Location
 }
 
@@ -36,7 +36,7 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 		pacific = time.FixedZone("PST", -8*3600)
 	}
 	if phoenix == nil {
-		phoenix = time.FixedZone("MST", -7*3600) // Arizona does not observe DST; remains UTC-7
+		phoenix = time.FixedZone("MST", -7*3600) // Arizona does not observe DST; remains UTC-7 year-round
 	}
 	if alaska == nil {
 		alaska = time.FixedZone("AKST", -9*3600)
@@ -45,22 +45,27 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 		hawaii = time.FixedZone("HST", -10*3600)
 	}
 
-	tzMap := map[string]*time.Location{
+	tzMap := map[string][]*time.Location{
 		// Eastern
-		"212": eastern, "347": eastern, "646": eastern, "718": eastern, "917": eastern,
-		"202": eastern, "305": eastern, "404": eastern, "617": eastern, "215": eastern,
+		"212": {eastern}, "347": {eastern}, "646": {eastern}, "718": {eastern}, "917": {eastern},
+		"202": {eastern}, "305": {eastern}, "404": {eastern}, "617": {eastern}, "215": {eastern},
 		// Central
-		"312": central, "773": central, "847": central, "214": central, "713": central,
-		"615": central, "314": central, "612": central, "504": central,
+		"312": {central}, "773": {central}, "847": {central}, "214": {central}, "713": {central},
+		"615": {central}, "314": {central}, "612": {central}, "504": {central},
 		// Mountain (Denver observes DST)
-		"303": mountain, "720": mountain, "801": mountain, "915": mountain,
-		// Arizona (America/Phoenix does NOT observe DST; UTC-7 year-round)
-		"602": phoenix, "480": phoenix, "623": phoenix, "928": phoenix,
+		"303": {mountain}, "720": {mountain}, "801": {mountain}, "915": {mountain},
+		// Arizona non-DST (America/Phoenix is UTC-7 year-round)
+		"602": {phoenix}, "480": {phoenix}, "623": {phoenix},
+		// Area code 928 covers both the Navajo Nation (which observes DST / Mountain Time)
+		// and Hopi / rural Arizona (which does not observe DST / Phoenix Time).
+		// DialPulse enforces the conservative intersection: dials are permitted only when
+		// BOTH Phoenix and Navajo (Denver) local times fall within 08:00 - 21:00.
+		"928": {phoenix, mountain},
 		// Pacific
-		"206": pacific, "415": pacific, "650": pacific, "310": pacific, "213": pacific,
-		"503": pacific, "858": pacific, "702": pacific,
+		"206": {pacific}, "415": {pacific}, "650": {pacific}, "310": {pacific}, "213": {pacific},
+		"503": {pacific}, "858": {pacific}, "702": {pacific},
 		// Alaska & Hawaii
-		"907": alaska, "808": hawaii,
+		"907": {alaska}, "808": {hawaii},
 	}
 
 	return &TimezoneGovernor{
@@ -78,7 +83,8 @@ func ExtractAreaCode(phone string) string {
 	return ""
 }
 
-// CanCall verifies if the recipient is currently within the permissible 08:00 - 21:00 calling window
+// CanCall verifies if the recipient is currently within the permissible 08:00 - 21:00 calling window.
+// For multi-jurisdiction area codes (like 928), ALL applicable zones must be within the legal window (intersection).
 func (g *TimezoneGovernor) CanCall(phone string, now ...time.Time) error {
 	currentTime := time.Now()
 	if len(now) > 0 && !now[0].IsZero() {
@@ -86,17 +92,19 @@ func (g *TimezoneGovernor) CanCall(phone string, now ...time.Time) error {
 	}
 
 	areaCode := ExtractAreaCode(phone)
-	loc, ok := g.areaCodeZones[areaCode]
-	if !ok {
+	locs, ok := g.areaCodeZones[areaCode]
+	if !ok || len(locs) == 0 {
 		return model.ErrUnknownTimezone
 	}
 
-	localTime := currentTime.In(loc)
-	hour := localTime.Hour()
+	for _, loc := range locs {
+		localTime := currentTime.In(loc)
+		hour := localTime.Hour()
 
-	// Legal dialing window: 08:00 AM (inclusive) to 09:00 PM (exclusive)
-	if hour < 8 || hour >= 21 {
-		return model.ErrTimezoneRestricted
+		// Legal dialing window: 08:00 AM (inclusive) to 09:00 PM (exclusive)
+		if hour < 8 || hour >= 21 {
+			return model.ErrTimezoneRestricted
+		}
 	}
 
 	return nil
@@ -105,14 +113,14 @@ func (g *TimezoneGovernor) CanCall(phone string, now ...time.Time) error {
 // GetRecipientTime returns the localized time for a phone number
 func (g *TimezoneGovernor) GetRecipientTime(phone string) time.Time {
 	areaCode := ExtractAreaCode(phone)
-	loc, ok := g.areaCodeZones[areaCode]
-	if !ok {
+	locs, ok := g.areaCodeZones[areaCode]
+	if !ok || len(locs) == 0 {
 		return time.Time{}
 	}
-	return time.Now().In(loc)
+	return time.Now().In(locs[0])
 }
 
-// NextPermissibleCallTime computes the exact timestamp when dialing becomes legally permissible (08:00 AM local)
+// NextPermissibleCallTime computes the exact timestamp when dialing becomes legally permissible (latest valid window)
 func (g *TimezoneGovernor) NextPermissibleCallTime(phone string, now ...time.Time) time.Time {
 	currentTime := time.Now()
 	if len(now) > 0 && !now[0].IsZero() {
@@ -120,24 +128,30 @@ func (g *TimezoneGovernor) NextPermissibleCallTime(phone string, now ...time.Tim
 	}
 
 	areaCode := ExtractAreaCode(phone)
-	loc, ok := g.areaCodeZones[areaCode]
-	if !ok {
+	locs, ok := g.areaCodeZones[areaCode]
+	if !ok || len(locs) == 0 {
 		return time.Time{}
 	}
 
-	localTime := currentTime.In(loc)
-	hour := localTime.Hour()
+	var latest time.Time
+	for _, loc := range locs {
+		localTime := currentTime.In(loc)
+		hour := localTime.Hour()
 
-	if hour < 8 {
-		// Permissible today at 08:00 AM local
-		target := time.Date(localTime.Year(), localTime.Month(), localTime.Day(), 8, 0, 0, 0, loc)
-		return target.UTC()
-	} else if hour >= 21 {
-		// Permissible tomorrow at 08:00 AM local
-		tomorrow := localTime.AddDate(0, 0, 1)
-		target := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 8, 0, 0, 0, loc)
-		return target.UTC()
+		var target time.Time
+		if hour < 8 {
+			target = time.Date(localTime.Year(), localTime.Month(), localTime.Day(), 8, 0, 0, 0, loc).UTC()
+		} else if hour >= 21 {
+			tomorrow := localTime.AddDate(0, 0, 1)
+			target = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 8, 0, 0, 0, loc).UTC()
+		} else {
+			target = currentTime.UTC()
+		}
+
+		if target.After(latest) {
+			latest = target
+		}
 	}
 
-	return currentTime.UTC()
+	return latest
 }
