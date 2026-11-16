@@ -439,12 +439,23 @@ func TestStoragePersistenceAndIdempotency(t *testing.T) {
 		t.Errorf("expected 2 inserted, 1 duplicate, got %d, %d", len(insertedIDs), duplicates)
 	}
 
-	// Update lead to DLQ
-	if err := repo.UpdateLeadStatus(ctx, "l1", model.StatusDLQ, "CARRIER_TIMEOUT", nil); err != nil {
-		t.Fatalf("failed updating lead: %v", err)
+	// Claim leads to obtain active lease token for l1
+	claimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 2, "test-worker-store")
+	if err != nil || len(claimed) != 2 {
+		t.Fatalf("failed claiming leads: %v", err)
+	}
+	var lead1 *model.Lead
+	for _, cl := range claimed {
+		if cl.ID == "l1" {
+			lead1 = cl
+			break
+		}
+	}
+	if lead1 == nil {
+		t.Fatalf("expected l1 to be claimed")
 	}
 
-	// Record Call Attempt
+	// Persist outcome transactionally to DLQ with active lease token
 	attempt := &model.CallAttempt{
 		ID:             "att_1",
 		CampaignID:     camp.ID,
@@ -454,8 +465,8 @@ func TestStoragePersistenceAndIdempotency(t *testing.T) {
 		RingDurationMs: 120,
 		ErrorMessage:   "carrier timeout",
 	}
-	if err := repo.RecordCallAttempt(ctx, attempt); err != nil {
-		t.Fatalf("failed recording call attempt: %v", err)
+	if err := repo.RecordCallOutcomeTx(ctx, "l1", model.StatusDLQ, "CARRIER_TIMEOUT", nil, attempt, 1, lead1.LeaseToken); err != nil {
+		t.Fatalf("failed recording call outcome tx: %v", err)
 	}
 
 	dlq, err := repo.GetDeadLetterQueue(ctx, camp.ID)
@@ -1739,9 +1750,11 @@ func TestRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 		t.Fatalf("expected error when recording attempt start for lead not in DIALING state, got nil")
 	}
 
-	// 3. Lead transitioned to DIALING with matching lease token must succeed
+	// 3. Lead transitioned to DIALING with matching lease token and active lease must succeed
 	lead.Status = model.StatusDialing
 	lead.LeaseToken = "token-valid"
+	nowLock := time.Now().UTC()
+	lead.LockedAt = &nowLock
 	err = memRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, "token-stale")
 	if err == nil {
 		t.Fatalf("expected error on lease token mismatch, got nil")
@@ -2277,5 +2290,175 @@ func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *
 	}
 	if finalStatus != "CONNECTED" || finalAttempts != 1 {
 		t.Fatalf("expected final lead status CONNECTED with attempts=1, got %s (attempts=%d)", finalStatus, finalAttempts)
+	}
+}
+
+// TestMemoryAttemptStartFailsOnExpiredLeaseBeforeReclamation verifies that a worker whose lease has expired (>2m)
+// cannot begin dialing, even if no other worker has reclaimed the row yet.
+func TestMemoryAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing.T) {
+	ctx := context.Background()
+	repo := storage.NewMemoryPostgresRepository()
+
+	camp := &model.Campaign{
+		ID:              "camp_expired_mem",
+		AllocatedAgents: 1,
+		Status:          model.CampaignRunning,
+	}
+	_ = repo.SaveCampaign(ctx, camp)
+
+	lead := &model.Lead{
+		ID:          "lead_expired_mem",
+		CampaignID:  camp.ID,
+		PhoneNumber: "+14155550999",
+		Priority:    50,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+
+	// 1. Worker A claims the lead
+	claimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming lead: %v", err)
+	}
+	leaseTokenA := claimed[0].LeaseToken
+
+	// 2. Simulate Worker A process pause exceeding 2-minute lease TTL
+	// In repository, backdate the lead's locked_at by 3 minutes
+	pastTime := time.Now().UTC().Add(-3 * time.Minute)
+	lead.LockedAt = &pastTime
+
+	// 3. Worker A resumes and calls RecordAttemptStart: MUST FAIL due to expired lease
+	attemptID := uuid.NewString()
+	err = repo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, leaseTokenA)
+	if err == nil {
+		t.Fatalf("expected RecordAttemptStart to fail on expired lease before reclamation, got nil")
+	}
+
+	// 4. Refresh locked_at within lease window: RecordAttemptStart now succeeds and atomically refreshes locked_at
+	now := time.Now().UTC()
+	lead.LockedAt = &now
+
+	validAttemptID := uuid.NewString()
+	err = repo.RecordAttemptStart(ctx, lead.ID, validAttemptID, 1, leaseTokenA)
+	if err != nil {
+		t.Fatalf("expected RecordAttemptStart to succeed on active lease, got %v", err)
+	}
+}
+
+// TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation verifies that in live PostgreSQL,
+// an attempt-start update requires locked_at >= NOW() - INTERVAL '2 minutes' and locked_at IS NOT NULL.
+// If Worker A's process pauses > 2 minutes and Worker B has NOT reclaimed the row, Worker A's RecordAttemptStart
+// MUST FAIL with zero affected rows, preventing Worker A from initiating dialing on an expired lease.
+func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
+	if dbURL == "" {
+		t.Skip("skipping live PostgreSQL test: TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	pgRepo, err := storage.NewPostgresRepositoryFromURL(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed connecting to live postgres: %v", err)
+	}
+	defer pgRepo.Close()
+
+	camp := &model.Campaign{
+		ID:              "camp_expiry_fencing_" + uuid.NewString()[:8],
+		AllocatedAgents: 1,
+		Status:          model.CampaignRunning,
+	}
+	if err := pgRepo.SaveCampaign(ctx, camp); err != nil {
+		t.Fatalf("failed saving campaign: %v", err)
+	}
+
+	lead := &model.Lead{
+		ID:          "lead_expiry_fencing_" + uuid.NewString()[:8],
+		CampaignID:  camp.ID,
+		PhoneNumber: fmt.Sprintf("+1415555%04d", rand.Intn(10000)),
+		Priority:    100,
+		Status:      model.StatusQueued,
+		CreatedAt:   time.Now().UTC(),
+	}
+	_, _, err = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
+	if err != nil {
+		t.Fatalf("failed ingesting lead: %v", err)
+	}
+
+	// 1. Worker A claims lead -> receives valid leaseToken
+	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed claiming lead: %v", err)
+	}
+	leaseTokenA := claimed[0].LeaseToken
+	if leaseTokenA == "" {
+		t.Fatalf("expected non-empty lease token")
+	}
+
+	// 2. Simulate Worker A process pause exceeding 2 minutes:
+	// Backdate locked_at by 3 minutes in PostgreSQL, but DO NOT let Worker B reclaim the row!
+	_, err = pgRepo.Pool().Exec(ctx,
+		"UPDATE leads SET locked_at = NOW() - INTERVAL '3 minutes' WHERE id = $1", lead.ID)
+	if err != nil {
+		t.Fatalf("failed simulating expired lease in postgres: %v", err)
+	}
+
+	// Verify row in PostgreSQL still has DIALING status and Token A stored
+	var curStatus, curToken, curWorker string
+	err = pgRepo.Pool().QueryRow(ctx,
+		"SELECT status, lease_token, locked_by FROM leads WHERE id = $1", lead.ID).
+		Scan(&curStatus, &curToken, &curWorker)
+	if err != nil {
+		t.Fatalf("failed querying lead: %v", err)
+	}
+	if curStatus != "DIALING" || curToken != leaseTokenA || curWorker != "worker-node-A" {
+		t.Fatalf("expected row to still hold Worker A's expired lease, got status=%s, token=%s, worker=%s", curStatus, curToken, curWorker)
+	}
+
+	// 3. Worker A resumes and calls RecordAttemptStart() with its leaseToken A:
+	// MUST FAIL because locked_at is older than NOW() - INTERVAL '2 minutes'!
+	attemptID := uuid.NewString()
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, leaseTokenA)
+	if err == nil {
+		t.Fatalf("expected RecordAttemptStart to fail on expired lease before reclamation, but got nil error")
+	}
+
+	// 4. Verify in PostgreSQL that attempt was NOT recorded and attempts counter was NOT incremented
+	var dbAttempts int
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT attempts FROM leads WHERE id = $1", lead.ID).Scan(&dbAttempts)
+	if err != nil {
+		t.Fatalf("failed querying attempts: %v", err)
+	}
+	if dbAttempts != 0 {
+		t.Fatalf("expected attempts to remain 0 after rejected attempt-start on expired lease, got %d", dbAttempts)
+	}
+
+	var attemptCount int
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM call_attempts WHERE id = $1", attemptID).Scan(&attemptCount)
+	if err != nil {
+		t.Fatalf("failed querying call_attempts: %v", err)
+	}
+	if attemptCount != 0 {
+		t.Fatalf("expected 0 call attempts inserted for expired lease attempt-start, got %d", attemptCount)
+	}
+
+	// 5. Verify that once refreshed within lease window, attempt start succeeds:
+	_, err = pgRepo.Pool().Exec(ctx, "UPDATE leads SET locked_at = NOW() WHERE id = $1", lead.ID)
+	if err != nil {
+		t.Fatalf("failed refreshing locked_at: %v", err)
+	}
+
+	validAttemptID := uuid.NewString()
+	err = pgRepo.RecordAttemptStart(ctx, lead.ID, validAttemptID, 1, leaseTokenA)
+	if err != nil {
+		t.Fatalf("expected RecordAttemptStart to succeed on refreshed active lease, got %v", err)
+	}
+
+	err = pgRepo.Pool().QueryRow(ctx, "SELECT attempts FROM leads WHERE id = $1", lead.ID).Scan(&dbAttempts)
+	if err != nil || dbAttempts != 1 {
+		t.Fatalf("expected attempts=1 after valid attempt-start, got %d (err: %v)", dbAttempts, err)
 	}
 }

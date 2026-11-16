@@ -27,7 +27,6 @@ type CampaignRepository interface {
 	ClaimPendingLeads(ctx context.Context, campaignID string, limit int, workerID string) ([]*model.Lead, error)
 	ReclaimExpiredLeases(ctx context.Context, campaignID string, leaseTTL time.Duration) (int64, error)
 	RescheduleLead(ctx context.Context, leadID string, nextAttempt time.Time, leaseToken string) error
-	UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error
 	RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error
 	RecordAttemptStart(ctx context.Context, leadID string, attemptID string, attemptNum int, leaseToken string) error
 	RecordCallOutcomeTx(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time, attempt *model.CallAttempt, attempts int, leaseToken string) error
@@ -384,7 +383,11 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 		    locked_by = NULL,
 		    locked_at = NULL,
 		    lease_token = NULL
-		WHERE id = $2 AND status = 'DIALING' AND lease_token = $3;`
+		WHERE id = $2
+		  AND status = 'DIALING'
+		  AND lease_token = $3
+		  AND locked_at IS NOT NULL
+		  AND locked_at >= NOW() - INTERVAL '2 minutes';`
 	tag, err := r.pool.Exec(ctx, query, nextAttempt, leadID, leaseToken)
 	if err != nil {
 		return err
@@ -456,20 +459,6 @@ func (r *PostgresRepository) IngestLeadsIdempotent(ctx context.Context, leads []
 	return insertedIDs, duplicates, nil
 }
 
-func (r *PostgresRepository) UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error {
-	query := `
-		UPDATE leads
-		SET status = $1,
-		    failure_reason = $2,
-		    next_attempt_at = $3,
-		    last_attempt_at = NOW(),
-		    attempts = attempts + 1
-		WHERE id = $4;`
-
-	_, err := r.pool.Exec(ctx, query, string(status), reason, nextAttempt, leadID)
-	return err
-}
-
 func (r *PostgresRepository) RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error {
 	query := `
 		INSERT INTO call_attempts (
@@ -512,14 +501,19 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 	updateLeadQuery := `
 		UPDATE leads
 		SET attempts = $1,
-		    last_attempt_at = NOW()
-		WHERE id = $2 AND status = 'DIALING' AND lease_token = $3;`
+		    last_attempt_at = NOW(),
+		    locked_at = NOW()
+		WHERE id = $2
+		  AND status = 'DIALING'
+		  AND lease_token = $3
+		  AND locked_at IS NOT NULL
+		  AND locked_at >= NOW() - INTERVAL '2 minutes';`
 	tag1, err := tx.Exec(ctx, updateLeadQuery, attemptNum, leadID, leaseToken)
 	if err != nil {
 		return fmt.Errorf("failed updating lead attempts in start tx: %w", err)
 	}
 	if tag1.RowsAffected() != 1 {
-		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with lease token, got %d", leadID, tag1.RowsAffected())
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got %d", leadID, tag1.RowsAffected())
 	}
 
 	insertAttemptQuery := `
@@ -568,7 +562,11 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 				    locked_by = NULL,
 				    locked_at = NULL,
 				    lease_token = NULL
-				WHERE id = $5 AND status = 'DIALING' AND lease_token = $6;`
+				WHERE id = $5
+				  AND status = 'DIALING'
+				  AND lease_token = $6
+				  AND locked_at IS NOT NULL
+				  AND locked_at >= NOW() - INTERVAL '2 minutes';`
 			tag, err := tx.Exec(ctx, updateQuery, string(status), reason, nextAttempt, attempts, leadID, leaseToken)
 			if err != nil {
 				return fmt.Errorf("failed updating lead status in tx: %w", err)
@@ -879,6 +877,10 @@ func (r *MemoryPostgresRepository) RescheduleLead(ctx context.Context, leadID st
 	if lead.LeaseToken != leaseToken {
 		return fmt.Errorf("reschedule_lead: stale lease token for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
+	now := time.Now().UTC()
+	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > 2*time.Minute {
+		return fmt.Errorf("reschedule_lead: stale lease token or invalid lead state for %s, got 0 affected rows (lease expired)", leadID)
+	}
 	lead.Status = model.StatusQueued
 	lead.NextAttemptAt = &nextAttempt
 	lead.LockedBy = ""
@@ -933,29 +935,6 @@ func (r *MemoryPostgresRepository) IngestLeadsIdempotent(ctx context.Context, le
 	return insertedIDs, duplicates, nil
 }
 
-func (r *MemoryPostgresRepository) UpdateLeadStatus(ctx context.Context, leadID string, status model.CallStatus, reason string, nextAttempt *time.Time) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	lead, ok := r.leads[leadID]
-	if !ok {
-		return model.ErrLeadNotFound
-	}
-
-	lead.Status = status
-	lead.FailureReason = reason
-	lead.Attempts++
-	lead.NextAttemptAt = nextAttempt
-	now := time.Now().UTC()
-	lead.LastAttemptAt = &now
-
-	if status == model.StatusDLQ || status == model.StatusFailed {
-		r.dlq[lead.CampaignID] = append(r.dlq[lead.CampaignID], lead)
-	}
-
-	return nil
-}
-
 func (r *MemoryPostgresRepository) RecordCallAttempt(ctx context.Context, attempt *model.CallAttempt) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -973,7 +952,7 @@ func (r *MemoryPostgresRepository) RecordAttemptStart(ctx context.Context, leadI
 
 	lead, exists := r.leads[leadID]
 	if !exists {
-		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with lease token, got 0", leadID)
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got 0", leadID)
 	}
 	if lead.Status != model.StatusDialing {
 		return fmt.Errorf("record_attempt_start: lead %s is not in DIALING status (status=%s)", leadID, lead.Status)
@@ -981,9 +960,13 @@ func (r *MemoryPostgresRepository) RecordAttemptStart(ctx context.Context, leadI
 	if lead.LeaseToken != leaseToken {
 		return fmt.Errorf("record_attempt_start: lease token mismatch for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
-	lead.Attempts = attemptNum
 	now := time.Now().UTC()
+	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > 2*time.Minute {
+		return fmt.Errorf("record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got 0 (lease expired)", leadID)
+	}
+	lead.Attempts = attemptNum
 	lead.LastAttemptAt = &now
+	lead.LockedAt = &now // Atomic lease refresh on attempt start
 
 	r.attempts[lead.CampaignID] = append(r.attempts[lead.CampaignID], &model.CallAttempt{
 		ID:          attemptID,
@@ -1014,6 +997,10 @@ func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, lead
 	if lead.LeaseToken != leaseToken {
 		return fmt.Errorf("record_call_outcome_tx: stale lease token for lead %s: current=%s, given=%s", leadID, lead.LeaseToken, leaseToken)
 	}
+	now := time.Now().UTC()
+	if lead.LockedAt == nil || now.Sub(*lead.LockedAt) > 2*time.Minute {
+		return fmt.Errorf("record_call_outcome_tx: stale lease token or invalid lead state for %s, got 0 affected rows (lease expired)", leadID)
+	}
 
 	lead.Status = status
 	lead.FailureReason = reason
@@ -1022,7 +1009,6 @@ func (r *MemoryPostgresRepository) RecordCallOutcomeTx(ctx context.Context, lead
 	lead.LockedBy = ""
 	lead.LockedAt = nil
 	lead.LeaseToken = ""
-	now := time.Now().UTC()
 	lead.LastAttemptAt = &now
 
 	if status == model.StatusDLQ || status == model.StatusFailed {
