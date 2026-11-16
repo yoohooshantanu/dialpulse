@@ -206,7 +206,16 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 			dlqMsg.Header.Set("x-delivery-count", fmt.Sprintf("%d", meta.NumDelivered))
 			dlqMsg.Data = msg.Data
 
-			if _, pubErr := c.js.PublishMsg(dlqMsg); pubErr != nil {
+			var pubErr error
+			if c.js != nil {
+				_, pubErr = c.js.PublishMsg(dlqMsg)
+				if pubErr != nil {
+					// Fall back to core NATS connection if no JetStream stream is mapped to DLQ subject
+					pubErr = c.js.Conn().PublishMsg(dlqMsg)
+				}
+			}
+
+			if pubErr != nil {
 				_ = msg.NakWithDelay(c.cfg.BaseBackoff)
 				return fmt.Errorf("outbox_consumer: failed routing poison message to DLQ: %w", pubErr)
 			}

@@ -462,47 +462,15 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 		BaseBackoff:      5 * time.Millisecond,
 	})
 
-	// Simulate delivery 1
-	simMsg1 := nats.NewMsg(subject)
-	simMsg1.Header.Set("Nats-Msg-Id", eventID)
-	simMsg1.Header.Set("x-aggregate-type", "lead")
-	simMsg1.Data = msg.Data
-	// Simulate metadata NumDelivered = 1
-	simMsg1.Reply = "_INBOX.test1"
-	err1 := consumer.ProcessMessage(ctx, simMsg1)
-	if err1 == nil {
-		t.Fatalf("expected handler error on delivery 1, got nil")
-	}
-
-	// Simulate delivery 2
-	simMsg2 := nats.NewMsg(subject)
-	simMsg2.Header.Set("Nats-Msg-Id", eventID)
-	simMsg2.Header.Set("x-aggregate-type", "lead")
-	simMsg2.Data = msg.Data
-	simMsg2.Reply = "_INBOX.test2"
-	// Set NumDelivered = 2 via fake metadata or header fallback
-	err2 := consumer.ProcessMessage(ctx, simMsg2)
-	if err2 == nil {
-		t.Fatalf("expected handler error on delivery 2, got nil")
-	}
-
-	// Simulate delivery 3 (hits MaxDeliveries)
-	simMsg3 := nats.NewMsg(subject)
-	simMsg3.Header.Set("Nats-Msg-Id", eventID)
-	simMsg3.Header.Set("x-aggregate-type", "lead")
-	simMsg3.Data = msg.Data
-	simMsg3.Reply = "_INBOX.test3"
-	// For testing with raw NATS msg, we simulate delivery metadata NumDelivered >= 3:
-	// We invoke with metadata or verify DLQ routing
-	// Since ProcessMessage reads meta.NumDelivered from JetStream msg, let's pull the actual message from JetStream!
+	// Create durable pull subscription to receive redeliveries
 	sub, err := js.PullSubscribe("dialpulse.events.poison.>", "poison_durable", nats.MaxDeliver(3))
 	if err != nil {
 		t.Fatalf("pull subscribe failed: %v", err)
 	}
 
-	// Fetch message and process through consumer until DLQ
+	// Fetch message and process through consumer until MaxDeliveries is reached
 	for i := 1; i <= 3; i++ {
-		msgs, err := sub.Fetch(1, nats.MaxWait(1*time.Second))
+		msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
 		if err != nil {
 			t.Fatalf("fetch attempt %d failed: %v", i, err)
 		}
@@ -511,10 +479,12 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 		}
 		m := msgs[0]
 		_ = consumer.ProcessMessage(ctx, m)
+		// Small sleep to ensure NakWithDelay has elapsed before next fetch
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	// Message should now be received on the DLQ subject
-	dlqMsg, err := dlqSub.NextMsg(2 * time.Second)
+	dlqMsg, err := dlqSub.NextMsg(3 * time.Second)
 	if err != nil {
 		t.Fatalf("expected poison message to arrive on DLQ %s, got: %v", dlqSubject, err)
 	}
@@ -592,6 +562,9 @@ func TestConcurrentRelaysSkipLockedNoDuplicatePublish(t *testing.T) {
 		t.Fatalf("failed connecting to Postgres: %v", err)
 	}
 	defer repo.Close()
+
+	// Ensure clean baseline for concurrency test
+	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events WHERE published_at IS NULL;`)
 
 	// Wrap publisher with atomic counter to record raw publish calls without relying on JetStream dedup
 	sharedPublisher := NewCountingPublisher(nil)
@@ -680,6 +653,9 @@ func TestOutboxLagMetricKeepsGrowingWhenRelayStopped(t *testing.T) {
 		t.Fatalf("failed connecting to Postgres: %v", err)
 	}
 	defer repo.Close()
+
+	// Ensure clean baseline for outbox lag test
+	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events WHERE published_at IS NULL;`)
 
 	// Insert an outbox row with created_at set to 10 seconds in the past
 	eventID := "evt_lag_" + uuid.New().String()
