@@ -359,7 +359,18 @@ func TestMultiCampaignConcurrencyIsolation(t *testing.T) {
 		_ = e.Start()
 	}
 
-	time.Sleep(150 * time.Millisecond)
+	for start := time.Now(); time.Since(start) < 2*time.Second; time.Sleep(50 * time.Millisecond) {
+		allDialed := true
+		for _, e := range engines {
+			if e.GetStats().DialedCalls == 0 {
+				allDialed = false
+				break
+			}
+		}
+		if allDialed {
+			break
+		}
+	}
 
 	// Verify each campaign maintains independent stats
 	for i, e := range engines {
@@ -1307,14 +1318,20 @@ func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
 	}
 
 	_ = engine2.Start()
-	time.Sleep(200 * time.Millisecond)
+	var dlqLeads []*model.Lead
+	for start := time.Now(); time.Since(start) < 2*time.Second; time.Sleep(50 * time.Millisecond) {
+		dlqLeads, _ = pgRepo.GetDeadLetterQueue(ctx, camp.ID)
+		if len(dlqLeads) > 0 {
+			break
+		}
+	}
 	engine2.Stop()
 
 	if atomic.LoadInt32(&dialedCalls) > 0 {
 		t.Errorf("expected 0 dials for DNC prohibited number, got %d", dialedCalls)
 	}
 
-	dlqLeads, err := pgRepo.GetDeadLetterQueue(ctx, camp.ID)
+	dlqLeads, err = pgRepo.GetDeadLetterQueue(ctx, camp.ID)
 	if err != nil {
 		t.Fatalf("failed fetching DLQ: %v", err)
 	}

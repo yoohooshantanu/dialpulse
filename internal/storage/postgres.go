@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,11 +46,17 @@ type CampaignRepository interface {
 
 // PostgresRepository implements CampaignRepository with connection pooling and atomic database transactions
 type PostgresRepository struct {
-	pool *pgxpool.Pool
+	pool             *pgxpool.Pool
+	outcomeTxRetries atomic.Int64
 }
 
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
+}
+
+// OutcomeTxRetries returns the total number of retries executed by RecordCallOutcomeTx
+func (r *PostgresRepository) OutcomeTxRetries() int64 {
+	return r.outcomeTxRetries.Load()
 }
 
 // Pool exposes the underlying connection pool for health checks and testing
@@ -622,6 +629,9 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
 	for i := 0; i < 3; i++ {
+		if i > 0 {
+			r.outcomeTxRetries.Add(1)
+		}
 		err := func() error {
 			tx, err := r.pool.Begin(ctx)
 			if err != nil {
