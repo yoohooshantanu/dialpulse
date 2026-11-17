@@ -34,66 +34,76 @@ type Config struct {
 	CampaignID        string
 	Tiny              bool
 	Explain           bool
-	QueryMode         string // "unified" or "split"
+	QueryMode         string // "unified", "split", or "partial"
 	Runs              int
 	Ramp              bool
 	DatasetExperiment bool
 	SyncCommit        string // "on" or "off"
+	PingBench         bool
+	OneRoundTrip      bool
 }
 
 type StepMetrics struct {
-	Scenario          string
-	QueryMode         string
-	Workers           int
-	NumLeads          int
-	DurationSec       float64
-	ClaimsPerSec      float64
-	RecordsPerSec     float64
-	ClaimP50Ms        float64
-	ClaimP95Ms        float64
-	ClaimP99Ms        float64
-	RecordP50Ms       float64
-	RecordP95Ms       float64
-	RecordP99Ms       float64
-	TotalP50Ms        float64
-	TotalP95Ms        float64
-	TotalP99Ms        float64
-	PoolAcquireWaitMs float64
-	PoolEmptyAcquires int64
-	MaxActiveConns    int
-	MaxLockWaits      int
-	LockWaitDetails   string
-	MaxPostgresCPU    float64
-	OutboxDrainSec    float64
-	MaxOutboxLagSec   float64
-	IndexUsed         string
-	QueryMeanTimeMs   float64
-	QueuedTimeline    []string
-	OutcomeRetries    int64
-	SyncCommit        string
+	Scenario              string
+	QueryMode             string
+	Workers               int
+	NumLeads              int
+	DurationSec           float64
+	ClaimsPerSec          float64
+	RecordsPerSec         float64
+	ClaimP50Ms            float64
+	ClaimP95Ms            float64
+	ClaimP99Ms            float64
+	RecordP50Ms           float64
+	RecordP95Ms           float64
+	RecordP99Ms           float64
+	TotalP50Ms            float64
+	TotalP95Ms            float64
+	TotalP99Ms            float64
+	PoolAcquireWaitMs     float64
+	PoolEmptyAcquires     int64
+	MaxActiveConns        int
+	MaxLockWaits          int
+	LockWaitDetails       string
+	MaxPostgresCPU        float64
+	OutboxDrainSec        float64
+	MaxOutboxLagSec       float64
+	IndexUsed             string
+	QueryMeanTimeMs       float64
+	QueuedTimeline        []string
+	OutcomeRetries        int64
+	SyncCommit            string
+	OneRoundTrip          bool
+	DockerStatsAttempted  int64
+	DockerStatsTaken      int64
+	CgroupMeanCPU         float64
+	CgroupNrThrottled     uint64
+	CgroupThrottledTimeUs uint64
 }
 
 type RangeMetrics struct {
-	Scenario           string
-	QueryMode          string
-	Workers            int
-	NumLeads           int
-	ClaimsPerSecRange  string
-	RecordsPerSecRange string
-	ClaimP50Range      string
-	ClaimP99Range      string
-	RecordP50Range     string
-	RecordP99Range     string
-	TotalP50Range      string
-	TotalP99Range      string
-	PoolWaitRange      string
-	EmptyAcquiresRange string
-	ActiveConnsRange   string
-	LockWaitsRange     string
-	PostgresCPURange   string
-	OutboxDrainRange   string
-	MaxOutboxLagRange  string
-	RetriesRange       string
+	Scenario              string
+	QueryMode             string
+	Workers               int
+	NumLeads              int
+	ClaimsPerSecRange     string
+	RecordsPerSecRange    string
+	ClaimP50Range         string
+	ClaimP99Range         string
+	RecordP50Range        string
+	RecordP99Range        string
+	TotalP50Range         string
+	TotalP99Range         string
+	PoolWaitRange         string
+	EmptyAcquiresRange    string
+	ActiveConnsRange      string
+	LockWaitsRange        string
+	PostgresCPURange      string
+	OutboxDrainRange      string
+	MaxOutboxLagRange     string
+	RetriesRange          string
+	CgroupCPURange        string
+	CgroupThrottledRange  string
 }
 
 func main() {
@@ -107,11 +117,13 @@ func main() {
 	flag.StringVar(&cfg.CampaignID, "campaign", "camp-load-1", "Campaign ID")
 	flag.BoolVar(&cfg.Tiny, "tiny", false, "Run tiny self-check (500 leads)")
 	flag.BoolVar(&cfg.Explain, "explain", false, "Run EXPLAIN ANALYZE index experiment")
-	flag.StringVar(&cfg.QueryMode, "query-mode", "split", "Query mode: unified (idx_leads_dispatch only) or split (composite index)")
+	flag.StringVar(&cfg.QueryMode, "query-mode", "split", "Query mode: unified (idx_leads_dispatch only), split (composite index), or partial (WHERE status='QUEUED')")
 	flag.IntVar(&cfg.Runs, "runs", 3, "Number of runs per step (for range reporting)")
 	flag.BoolVar(&cfg.Ramp, "ramp", false, "Run full ramp across W=1,2,4,8,16,32")
 	flag.BoolVar(&cfg.DatasetExperiment, "dataset-experiment", false, "Run 1M leads dataset experiment")
 	flag.StringVar(&cfg.SyncCommit, "sync-commit", "on", "synchronous_commit: on or off")
+	flag.BoolVar(&cfg.PingBench, "ping-bench", false, "Run 1000-sample SELECT 1 ping round-trip benchmark")
+	flag.BoolVar(&cfg.OneRoundTrip, "one-round-trip", false, "Use single-round-trip CTE transaction for record path")
 	flag.Parse()
 
 	if cfg.Tiny {
@@ -140,6 +152,11 @@ func main() {
 		log.Fatalf("Failed to ping postgres: %v", err)
 	}
 
+	if cfg.PingBench {
+		runPingBench(ctx, pool)
+		return
+	}
+
 	// Apply synchronous_commit setting
 	_, _ = pool.Exec(ctx, fmt.Sprintf("ALTER SYSTEM SET synchronous_commit = '%s';", cfg.SyncCommit))
 	_, _ = pool.Exec(ctx, "SELECT pg_reload_conf();")
@@ -164,7 +181,8 @@ func main() {
 	// Single step multi-run
 	var stepRuns []StepMetrics
 	for r := 1; r <= cfg.Runs; r++ {
-		fmt.Printf("\n--- Run %d of %d ---\n", r, cfg.Runs)
+		fmt.Printf("\n--- Run %d of %d (Scenario %s, W=%d, Leads=%d, Mode=%s) ---\n",
+			r, cfg.Runs, cfg.Scenario, cfg.Workers, cfg.NumLeads, cfg.QueryMode)
 		res, err := runBenchmark(ctx, pool, repo, cfg)
 		if err != nil {
 			log.Fatalf("Benchmark run %d failed: %v", r, err)
@@ -174,6 +192,29 @@ func main() {
 
 	rMetric := summarizeRanges(stepRuns)
 	printRangeTable([]RangeMetrics{rMetric}, cfg.QueryMode)
+}
+
+func runPingBench(ctx context.Context, pool *pgxpool.Pool) {
+	fmt.Println("\n=======================================================")
+	fmt.Println("BENCHMARK: SELECT 1 Round-Trip Latency (1,000 samples)")
+	fmt.Println("=======================================================")
+	samples := make([]float64, 1000)
+	var sum float64
+	for i := 0; i < 1000; i++ {
+		start := time.Now()
+		var one int
+		if err := pool.QueryRow(ctx, "SELECT 1;").Scan(&one); err != nil {
+			log.Fatalf("SELECT 1 failed: %v", err)
+		}
+		durMs := float64(time.Since(start).Microseconds()) / 1000.0
+		samples[i] = durMs
+		sum += durMs
+	}
+	sort.Float64s(samples)
+	fmt.Printf("Samples: %d | Mean: %.2f ms | Min: %.2f ms | p50: %.2f ms | p90: %.2f ms | p95: %.2f ms | p99: %.2f ms | Max: %.2f ms\n",
+		len(samples), sum/float64(len(samples)), samples[0],
+		percentile(samples, 0.50), percentile(samples, 0.90), percentile(samples, 0.95), percentile(samples, 0.99), samples[len(samples)-1])
+	fmt.Println("=======================================================")
 }
 
 func runFullRamp(ctx context.Context, pool *pgxpool.Pool, repo *storage.PostgresRepository, baseCfg Config) {
@@ -210,15 +251,12 @@ func runFullRamp(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgres
 
 func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *storage.PostgresRepository, cfg Config) {
 	fmt.Println("=================================================================")
-	fmt.Println("DATASET EXPERIMENT: 1,000,000 LEADS")
+	fmt.Println("DATASET EXPERIMENT: 1,000,000 LEADS INDEX COMPARISON AT SCALE")
 	fmt.Println("=================================================================")
 
 	// Reset tables
 	resetTables(ctx, pool)
 	ensureCampaign(ctx, pool, cfg.CampaignID)
-
-	// Ensure composite index exists for 1M test
-	_, _ = pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC);`)
 
 	// Seed 1,000,000 leads
 	fmt.Println("Seeding 1,000,000 leads (batch size 10,000)...")
@@ -248,7 +286,7 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 		if err != nil {
 			log.Fatalf("CopyFrom error: %v", err)
 		}
-		if (inserted+batchSize)%100000 == 0 {
+		if (inserted+batchSize)%200000 == 0 {
 			fmt.Printf("  Seeded %d / %d leads (%.1fs elapsed)\n", inserted+batchSize, totalLeads, time.Since(seedStart).Seconds())
 		}
 	}
@@ -256,47 +294,149 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 
 	_, _ = pool.Exec(ctx, "ANALYZE leads;")
 
-	// 1. EXPLAIN (ANALYZE, BUFFERS) on 1M leads
-	fmt.Println("\n--- EXPLAIN (ANALYZE, BUFFERS) on 1,000,000 Leads ---")
+	modes := []string{"unified", "split", "partial"}
+	workerLevels := []int{8, 32}
+	leadsPerRun := 1500
+	runsPerStep := 3
+
+	type ExpResult struct {
+		Mode       string
+		Workers    int
+		Throughput string
+		ClaimP50   string
+		RecordP50  string
+		TotalP50   string
+	}
+	var summaryResults []ExpResult
+
+	totalDrainedSoFar := 0
+
+	for _, mode := range modes {
+		// Set up indexes for this mode
+		if mode == "unified" {
+			_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; DROP INDEX IF EXISTS idx_leads_queued; DROP INDEX IF EXISTS idx_leads_partial_queued;`)
+		} else if mode == "split" {
+			_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_partial_queued; CREATE INDEX IF NOT EXISTS idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC);`)
+		} else if mode == "partial" {
+			_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; CREATE INDEX IF NOT EXISTS idx_leads_partial_queued ON leads (campaign_id, priority DESC, created_at ASC) WHERE status = 'QUEUED';`)
+		}
+		_, _ = pool.Exec(ctx, "ANALYZE leads;")
+
+		for _, workers := range workerLevels {
+			var tpList, cp50List, rp50List, totp50List []float64
+
+			for run := 1; run <= runsPerStep; run++ {
+				fmt.Printf("\n>>> Running 1M Drain: Mode=%s, W=%d (Run %d/%d, Draining %d leads)...\n", mode, workers, run, runsPerStep, leadsPerRun)
+				tp, cp50, rp50, totp50 := run1MDrainStep(ctx, pool, repo, cfg.CampaignID, mode, workers, leadsPerRun, cfg.BatchSize)
+				tpList = append(tpList, tp)
+				cp50List = append(cp50List, cp50)
+				rp50List = append(rp50List, rp50)
+				totp50List = append(totp50List, totp50)
+				totalDrainedSoFar += leadsPerRun
+				fmt.Printf("    Run %d: %.1f leads/s, Claim p50: %.1fms, Record p50: %.1fms, Tot p50: %.1fms (Total Drained: %d)\n",
+					run, tp, cp50, rp50, totp50, totalDrainedSoFar)
+			}
+
+			minTp, maxTp := minMax(tpList)
+			minC, maxC := minMax(cp50List)
+			minR, maxR := minMax(rp50List)
+			minTot, maxTot := minMax(totp50List)
+
+			summaryResults = append(summaryResults, ExpResult{
+				Mode:       mode,
+				Workers:    workers,
+				Throughput: fmt.Sprintf("[%.1f - %.1f]", minTp, maxTp),
+				ClaimP50:   fmt.Sprintf("[%.1f - %.1f]", minC, maxC),
+				RecordP50:  fmt.Sprintf("[%.1f - %.1f]", minR, maxR),
+				TotalP50:   fmt.Sprintf("[%.1f - %.1f]", minTot, maxTot),
+			})
+		}
+	}
+
+	// Print summary table
+	fmt.Printf("\n===================================================================================================\n")
+	fmt.Printf("1,000,000 LEADS BENCHMARK SUMMARY (Total Drained: %d leads) - Max Claim-and-Record Rate (No Dial Time)\n", totalDrainedSoFar)
+	fmt.Printf("===================================================================================================\n")
+	fmt.Printf("| %-10s | %-3s | %-15s | %-15s | %-15s | %-15s |\n", "Mode", "W", "Throughput/s", "Tot p50 (ms)", "Claim p50 (ms)", "Record p50 (ms)")
+	fmt.Println("|------------|-----|-----------------|-----------------|-----------------|-----------------|")
+	for _, res := range summaryResults {
+		fmt.Printf("| %-10s | %-3d | %-15s | %-15s | %-15s | %-15s |\n",
+			res.Mode, res.Workers, res.Throughput, res.TotalP50, res.ClaimP50, res.RecordP50)
+	}
+	fmt.Printf("===================================================================================================\n")
+
+	// Now run EXPLAIN (ANALYZE, BUFFERS) on the partly drained table (>20,000 leads drained!)
+	fmt.Printf("\n=================================================================\n")
+	fmt.Printf("EXPLAIN (ANALYZE, BUFFERS) ON PARTLY DRAINED TABLE (%d Leads Processed)\n", totalDrainedSoFar)
+	fmt.Printf("=================================================================\n")
 	limit := 50
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
-	fmt.Println(">>> Split Claim Query (Fast Path) on 1M leads with idx_leads_comp:")
-	runExplain(ctx, pool, fastPathQuery, "Split Claim Fast Path (1M leads)", cfg.CampaignID, limit, intervalStr)
+	// 1. Unified Query with Migration 001 idx_leads_dispatch
+	_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; DROP INDEX IF EXISTS idx_leads_partial_queued;`)
+	_, _ = pool.Exec(ctx, "ANALYZE leads;")
+	fmt.Println("\n--- [Partly Drained] Unified Query with idx_leads_dispatch ---")
+	runExplain(ctx, pool, unifiedQuery, "Unified Query (Migration 001)", cfg.CampaignID, limit, intervalStr)
 
-	// 2. Drain progression: 8 workers claim and record 2,000 leads from the 1M leads table
-	fmt.Println("\n--- Draining 2,000 Leads from 1M Leads Table (W=8) ---")
-	drainCfg := cfg
-	drainCfg.Workers = 8
-	drainCfg.NumLeads = 2000
-	drainCfg.BatchSize = 50
-	drainCfg.Scenario = "A"
-	drainCfg.QueryMode = "split"
+	// 2. Split Query with Composite Index idx_leads_comp
+	_, _ = pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC);`)
+	_, _ = pool.Exec(ctx, "ANALYZE leads;")
+	fmt.Println("\n--- [Partly Drained] Split Fast Path with idx_leads_comp (Composite Index) ---")
+	runExplain(ctx, pool, fastPathQuery, "Split Fast Path (Composite Index)", cfg.CampaignID, limit, intervalStr)
 
-	// Measure drain without truncating table
+	// 3. Split Query with Partial Index idx_leads_partial_queued
+	_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; CREATE INDEX IF NOT EXISTS idx_leads_partial_queued ON leads (campaign_id, priority DESC, created_at ASC) WHERE status = 'QUEUED';`)
+	_, _ = pool.Exec(ctx, "ANALYZE leads;")
+	fmt.Println("\n--- [Partly Drained] Split Fast Path with idx_leads_partial_queued (Partial Index) ---")
+	runExplain(ctx, pool, fastPathQuery, "Split Fast Path (Partial Index WHERE status='QUEUED')", cfg.CampaignID, limit, intervalStr)
+}
+
+func run1MDrainStep(ctx context.Context, pool *pgxpool.Pool, repo *storage.PostgresRepository, campaignID string, mode string, workers int, numLeads int, batchSize int) (float64, float64, float64, float64) {
 	stepStart := time.Now()
 	var claimed atomic.Int64
 	var wg sync.WaitGroup
 
-	for w := 0; w < drainCfg.Workers; w++ {
+	var claimLats, recLats, totLats []float64
+	var latMu sync.Mutex
+
+	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		workerID := fmt.Sprintf("worker-1m-%d", w)
+		workerID := fmt.Sprintf("worker-1m-%s-%d-%d", mode, workers, w)
+
 		go func(wID string) {
 			defer wg.Done()
-			for claimed.Load() < int64(drainCfg.NumLeads) {
-				leads, err := claimSplitQuery(ctx, pool, drainCfg.CampaignID, drainCfg.BatchSize, wID)
-				if err != nil || len(leads) == 0 {
-					break
+			for claimed.Load() < int64(numLeads) {
+				startClaim := time.Now()
+				var leads []*model.Lead
+				var err error
+
+				if mode == "split" {
+					leads, err = claimSplitQuery(ctx, pool, campaignID, batchSize, wID)
+				} else if mode == "partial" {
+					leads, err = claimPartialQuery(ctx, pool, campaignID, batchSize, wID)
+				} else {
+					leads, err = repo.ClaimPendingLeads(ctx, campaignID, batchSize, wID)
 				}
+				claimDurMs := float64(time.Since(startClaim).Microseconds()) / 1000.0
+
+				if err != nil || len(leads) == 0 {
+					time.Sleep(5 * time.Millisecond)
+					continue
+				}
+
+				perLeadClaimMs := claimDurMs / float64(len(leads))
+
 				for _, lead := range leads {
-					if claimed.Add(1) > int64(drainCfg.NumLeads) {
+					if claimed.Add(1) > int64(numLeads) {
 						break
 					}
+
+					startRecord := time.Now()
 					attemptID := uuid.New().String()
 					_ = repo.RecordAttemptStart(ctx, lead.ID, attemptID, lead.Attempts+1, lead.LeaseToken)
 					attempt := &model.CallAttempt{
 						ID:             attemptID,
-						CampaignID:     drainCfg.CampaignID,
+						CampaignID:     campaignID,
 						LeadID:         lead.ID,
 						PhoneNumber:    lead.PhoneNumber,
 						Status:         model.StatusCompleted,
@@ -305,19 +445,48 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 						CreatedAt:      time.Now().UTC(),
 					}
 					_ = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusCompleted, "answered", nil, attempt, lead.Attempts+1, lead.LeaseToken)
+					recDurMs := float64(time.Since(startRecord).Microseconds()) / 1000.0
+
+					latMu.Lock()
+					claimLats = append(claimLats, perLeadClaimMs)
+					recLats = append(recLats, recDurMs)
+					totLats = append(totLats, perLeadClaimMs+recDurMs)
+					latMu.Unlock()
 				}
 			}
 		}(workerID)
 	}
 
 	wg.Wait()
-	drainDuration := time.Since(stepStart)
-	fmt.Printf("✔ Processed %d leads from 1M-row table in %.2fs (Throughput: %.1f leads/s)\n",
-		claimed.Load(), drainDuration.Seconds(), float64(claimed.Load())/drainDuration.Seconds())
+	dur := time.Since(stepStart).Seconds()
+	nClaimed := float64(claimed.Load())
+	tp := nClaimed / dur
 
-	var remainingQueued int64
-	_ = pool.QueryRow(ctx, "SELECT count(*) FROM leads WHERE campaign_id = $1 AND status = 'QUEUED';", cfg.CampaignID).Scan(&remainingQueued)
-	fmt.Printf("QUEUED leads remaining in 1M table: %d\n", remainingQueued)
+	sort.Float64s(claimLats)
+	sort.Float64s(recLats)
+	sort.Float64s(totLats)
+
+	cp50 := percentile(claimLats, 0.50)
+	rp50 := percentile(recLats, 0.50)
+	totp50 := percentile(totLats, 0.50)
+
+	return tp, cp50, rp50, totp50
+}
+
+func minMax(vals []float64) (float64, float64) {
+	if len(vals) == 0 {
+		return 0, 0
+	}
+	minVal, maxVal := vals[0], vals[0]
+	for _, v := range vals[1:] {
+		if v < minVal {
+			minVal = v
+		}
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+	return minVal, maxVal
 }
 
 func runIndexExperiment(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
@@ -462,9 +631,11 @@ func (h *NoOpConsumerHandler) HandleEventTx(ctx context.Context, tx pgx.Tx, even
 func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.PostgresRepository, cfg Config) (StepMetrics, error) {
 	// Setup index configuration based on QueryMode
 	if cfg.QueryMode == "unified" {
-		_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; DROP INDEX IF EXISTS idx_leads_queued;`)
+		_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; DROP INDEX IF EXISTS idx_leads_queued; DROP INDEX IF EXISTS idx_leads_partial_queued;`)
+	} else if cfg.QueryMode == "partial" {
+		_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; DROP INDEX IF EXISTS idx_leads_queued; CREATE INDEX IF NOT EXISTS idx_leads_partial_queued ON leads (campaign_id, priority DESC, created_at ASC) WHERE status = 'QUEUED';`)
 	} else {
-		_, _ = pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC);`)
+		_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_partial_queued; CREATE INDEX IF NOT EXISTS idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC);`)
 	}
 
 	resetTables(ctx, pool)
@@ -472,6 +643,9 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 	seedLeads(ctx, pool, cfg.CampaignID, cfg.NumLeads)
 
 	_, _ = pool.Exec(ctx, "SELECT pg_stat_statements_reset();")
+
+	cgroupStartUsage, _ := readCgroupUsage("dialpulse-postgres")
+	throttleStart, throttledTimeStart, _ := readCgroupThrottle("dialpulse-postgres")
 
 	var nc *nats.Conn
 	var js nats.JetStreamContext
@@ -544,6 +718,8 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 	var maxOutboxLag float64
 	var queuedCountTimeline []string
 	var monitorWg sync.WaitGroup
+	var dockerStatsAttempted atomic.Int64
+	var dockerStatsTaken atomic.Int64
 
 	monitorWg.Add(1)
 	go func() {
@@ -605,9 +781,13 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 				}
 
 				if tickCount%5 == 0 {
-					cpu := sampleDockerCPU("dialpulse-postgres")
-					if cpu > maxCPU {
-						maxCPU = cpu
+					dockerStatsAttempted.Add(1)
+					cpu, ok := sampleDockerCPUCounted("dialpulse-postgres")
+					if ok {
+						dockerStatsTaken.Add(1)
+						if cpu > maxCPU {
+							maxCPU = cpu
+						}
 					}
 				}
 			}
@@ -649,6 +829,8 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 
 				if cfg.QueryMode == "split" {
 					leads, err = claimSplitQuery(ctx, pool, cfg.CampaignID, cfg.BatchSize, wID)
+				} else if cfg.QueryMode == "partial" {
+					leads, err = claimPartialQuery(ctx, pool, cfg.CampaignID, cfg.BatchSize, wID)
 				} else {
 					leads, err = repo.ClaimPendingLeads(ctx, cfg.CampaignID, cfg.BatchSize, wID)
 				}
@@ -684,25 +866,31 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 					startRecord := time.Now()
 					attemptID := uuid.New().String()
 
-					// RecordAttemptStart
-					if err := repo.RecordAttemptStart(ctx, lead.ID, attemptID, lead.Attempts+1, lead.LeaseToken); err != nil {
-						log.Fatalf("RecordAttemptStart failed: %v", err)
-					}
+					if cfg.OneRoundTrip {
+						if err := recordOneRoundTrip(ctx, pool, cfg.CampaignID, lead.ID, lead.LeaseToken, attemptID, lead.PhoneNumber, lead.Attempts+1); err != nil {
+							log.Fatalf("recordOneRoundTrip failed: %v", err)
+						}
+					} else {
+						// RecordAttemptStart
+						if err := repo.RecordAttemptStart(ctx, lead.ID, attemptID, lead.Attempts+1, lead.LeaseToken); err != nil {
+							log.Fatalf("RecordAttemptStart failed: %v", err)
+						}
 
-					// RecordCallOutcomeTx
-					attempt := &model.CallAttempt{
-						ID:             attemptID,
-						CampaignID:     cfg.CampaignID,
-						LeadID:         lead.ID,
-						PhoneNumber:    lead.PhoneNumber,
-						Status:         model.StatusCompleted,
-						RingDurationMs: 0,
-						TalkDurationMs: 0,
-						CreatedAt:      time.Now().UTC(),
-					}
+						// RecordCallOutcomeTx
+						attempt := &model.CallAttempt{
+							ID:             attemptID,
+							CampaignID:     cfg.CampaignID,
+							LeadID:         lead.ID,
+							PhoneNumber:    lead.PhoneNumber,
+							Status:         model.StatusCompleted,
+							RingDurationMs: 0,
+							TalkDurationMs: 0,
+							CreatedAt:      time.Now().UTC(),
+						}
 
-					if err := repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusCompleted, "answered", nil, attempt, lead.Attempts+1, lead.LeaseToken); err != nil {
-						log.Fatalf("RecordCallOutcomeTx failed: %v", err)
+						if err := repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusCompleted, "answered", nil, attempt, lead.Attempts+1, lead.LeaseToken); err != nil {
+							log.Fatalf("RecordCallOutcomeTx failed: %v", err)
+						}
 					}
 
 					recordDurMs := float64(time.Since(startRecord).Microseconds()) / 1000.0
@@ -753,6 +941,18 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 	close(stopMonitor)
 	monitorWg.Wait()
 
+	cgroupEndUsage, _ := readCgroupUsage("dialpulse-postgres")
+	throttleEnd, throttledTimeEnd, _ := readCgroupThrottle("dialpulse-postgres")
+	var cgroupMeanCPU float64
+	if benchDuration.Nanoseconds() > 0 && cgroupEndUsage > cgroupStartUsage {
+		cgroupMeanCPU = (float64(cgroupEndUsage-cgroupStartUsage) / float64(benchDuration.Nanoseconds())) * 100.0
+	}
+	nrThrottled := throttleEnd - throttleStart
+	var throttledTimeUs uint64
+	if throttledTimeEnd > throttledTimeStart {
+		throttledTimeUs = throttledTimeEnd - throttledTimeStart
+	}
+
 	// Invariant Checks
 	var queuedLeft int64
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM leads WHERE campaign_id = $1 AND status = 'QUEUED';`, cfg.CampaignID).Scan(&queuedLeft)
@@ -802,34 +1002,40 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 	retriesThisRun := repo.OutcomeTxRetries() - initialRetries
 
 	metrics := StepMetrics{
-		Scenario:          cfg.Scenario,
-		QueryMode:         cfg.QueryMode,
-		Workers:           cfg.Workers,
-		NumLeads:          cfg.NumLeads,
-		DurationSec:       benchDuration.Seconds(),
-		ClaimsPerSec:      float64(totalClaimed.Load()) / benchDuration.Seconds(),
-		RecordsPerSec:     float64(totalRecorded.Load()) / benchDuration.Seconds(),
-		ClaimP50Ms:        claimP50,
-		ClaimP95Ms:        claimP95,
-		ClaimP99Ms:        claimP99,
-		RecordP50Ms:       recP50,
-		RecordP95Ms:       recP95,
-		RecordP99Ms:       recP99,
-		TotalP50Ms:        totP50,
-		TotalP95Ms:        totP95,
-		TotalP99Ms:        totP99,
-		PoolAcquireWaitMs: float64(poolStat.AcquireDuration().Microseconds()) / 1000.0,
-		PoolEmptyAcquires: poolStat.EmptyAcquireCount(),
-		MaxActiveConns:    int(atomic.LoadInt32(&maxActiveConns)),
-		MaxLockWaits:      int(atomic.LoadInt32(&maxLockWaits)),
-		LockWaitDetails:   strings.Join(waitEvents, ", "),
-		MaxPostgresCPU:    maxCPU,
-		OutboxDrainSec:    outboxDrainDuration.Seconds(),
-		MaxOutboxLagSec:   maxOutboxLag,
-		QueryMeanTimeMs:   queryMeanTime,
-		QueuedTimeline:    queuedCountTimeline,
-		OutcomeRetries:    retriesThisRun,
-		SyncCommit:        cfg.SyncCommit,
+		Scenario:              cfg.Scenario,
+		QueryMode:             cfg.QueryMode,
+		Workers:               cfg.Workers,
+		NumLeads:              cfg.NumLeads,
+		DurationSec:           benchDuration.Seconds(),
+		ClaimsPerSec:          float64(totalClaimed.Load()) / benchDuration.Seconds(),
+		RecordsPerSec:         float64(totalRecorded.Load()) / benchDuration.Seconds(),
+		ClaimP50Ms:            claimP50,
+		ClaimP95Ms:            claimP95,
+		ClaimP99Ms:            claimP99,
+		RecordP50Ms:           recP50,
+		RecordP95Ms:           recP95,
+		RecordP99Ms:           recP99,
+		TotalP50Ms:            totP50,
+		TotalP95Ms:            totP95,
+		TotalP99Ms:            totP99,
+		PoolAcquireWaitMs:     float64(poolStat.AcquireDuration().Microseconds()) / 1000.0,
+		PoolEmptyAcquires:     poolStat.EmptyAcquireCount(),
+		MaxActiveConns:        int(atomic.LoadInt32(&maxActiveConns)),
+		MaxLockWaits:          int(atomic.LoadInt32(&maxLockWaits)),
+		LockWaitDetails:       strings.Join(waitEvents, ", "),
+		MaxPostgresCPU:        maxCPU,
+		OutboxDrainSec:        outboxDrainDuration.Seconds(),
+		MaxOutboxLagSec:       maxOutboxLag,
+		QueryMeanTimeMs:       queryMeanTime,
+		QueuedTimeline:        queuedCountTimeline,
+		OutcomeRetries:        retriesThisRun,
+		SyncCommit:            cfg.SyncCommit,
+		OneRoundTrip:          cfg.OneRoundTrip,
+		DockerStatsAttempted:  dockerStatsAttempted.Load(),
+		DockerStatsTaken:      dockerStatsTaken.Load(),
+		CgroupMeanCPU:         cgroupMeanCPU,
+		CgroupNrThrottled:     nrThrottled,
+		CgroupThrottledTimeUs: throttledTimeUs,
 	}
 
 	// Print pg_stat_statements top statements
@@ -1031,21 +1237,159 @@ func percentile(sorted []float64, pct float64) float64 {
 	return sorted[idx]
 }
 
-func sampleDockerCPU(container string) float64 {
+func sampleDockerCPUCounted(container string) (float64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}", container)
 	out, err := cmd.Output()
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	s := strings.TrimSpace(string(out))
 	s = strings.TrimSuffix(s, "%")
 	val, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return val
+	return val, true
+}
+
+func readCgroupUsage(container string) (uint64, error) {
+	cmd := exec.Command("docker", "exec", container, "cat", "/sys/fs/cgroup/cpuacct/cpuacct.usage")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	val, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	return val, err
+}
+
+func readCgroupThrottle(container string) (nrThrottled uint64, throttledTimeUs uint64, err error) {
+	cmd := exec.Command("docker", "exec", container, "cat", "/sys/fs/cgroup/cpu/cpu.stat")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0, err
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, l := range lines {
+		fields := strings.Fields(l)
+		if len(fields) == 2 {
+			if fields[0] == "nr_throttled" {
+				nrThrottled, _ = strconv.ParseUint(fields[1], 10, 64)
+			} else if fields[0] == "throttled_time" {
+				tNs, _ := strconv.ParseUint(fields[1], 10, 64)
+				throttledTimeUs = tNs / 1000
+			}
+		}
+	}
+	return nrThrottled, throttledTimeUs, nil
+}
+
+func recordOneRoundTrip(ctx context.Context, pool *pgxpool.Pool, campaignID, leadID, leaseToken, attemptID, phone string, attemptNum int) error {
+	payloadJSON := fmt.Sprintf(`{"lead_id":"%s","status":"CONNECTED","attempt":%d}`, leadID, attemptNum)
+	query := `
+		WITH locked_lead AS (
+			SELECT id, campaign_id, phone_number, attempts
+			FROM leads
+			WHERE id = $1 AND lease_token = $2
+			FOR UPDATE
+		),
+		upd_lead AS (
+			UPDATE leads
+			SET status = 'CONNECTED',
+			    attempts = attempts + 1,
+			    locked_by = NULL,
+			    locked_at = NULL,
+			    lease_token = NULL,
+			    last_attempt_at = clock_timestamp()
+			WHERE id IN (SELECT id FROM locked_lead)
+			RETURNING id, campaign_id, phone_number, attempts
+		),
+		ins_attempt AS (
+			INSERT INTO call_attempts (
+				id, campaign_id, lead_id, phone_number, status, ring_duration_ms, talk_duration_ms, created_at
+			)
+			SELECT $3, u.campaign_id, u.id, u.phone_number, 'COMPLETED', 0, 0, clock_timestamp()
+			FROM upd_lead u
+		)
+		INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
+		SELECT $4, 'call', u.id, 'call.outcome_recorded', $5::jsonb, clock_timestamp()
+		FROM upd_lead u;
+	`
+	tag, err := pool.Exec(ctx, query, leadID, leaseToken, attemptID, uuid.New().String(), payloadJSON)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("stale lease token or lead not found for %s", leadID)
+	}
+	return nil
+}
+
+func claimPartialQuery(ctx context.Context, pool *pgxpool.Pool, campaignID string, limit int, workerID string) ([]*model.Lead, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	query := `
+		UPDATE leads
+		SET status = 'DIALING',
+		    locked_by = $1,
+		    locked_at = clock_timestamp(),
+		    lease_token = gen_random_uuid()::text
+		WHERE id IN (
+			SELECT id FROM leads
+			WHERE campaign_id = $2
+			  AND status = 'QUEUED'
+			  AND (next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp())
+			ORDER BY priority DESC, created_at ASC
+			LIMIT $3
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, campaign_id, phone_number, name, priority,
+		          status, attempts, max_attempts, failure_reason,
+		          locked_by, locked_at, last_attempt_at, next_attempt_at, created_at, lease_token;`
+
+	rows, err := tx.Query(ctx, query, workerID, campaignID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var claimed []*model.Lead
+	for rows.Next() {
+		l := &model.Lead{}
+		var status string
+		var lockedBy *string
+		var leaseToken *string
+		var failureReason *string
+		err := rows.Scan(
+			&l.ID, &l.CampaignID, &l.PhoneNumber, &l.Name, &l.Priority,
+			&status, &l.Attempts, &l.MaxAttempts, &failureReason,
+			&lockedBy, &l.LockedAt, &l.LastAttemptAt, &l.NextAttemptAt, &l.CreatedAt, &leaseToken,
+		)
+		if err != nil {
+			return nil, err
+		}
+		l.Status = model.CallStatus(status)
+		if lockedBy != nil {
+			l.LockedBy = *lockedBy
+		}
+		if leaseToken != nil {
+			l.LeaseToken = *leaseToken
+		}
+		if failureReason != nil {
+			l.FailureReason = *failureReason
+		}
+		claimed = append(claimed, l)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return claimed, nil
 }
 
 func summarizeRanges(runs []StepMetrics) RangeMetrics {
@@ -1069,6 +1413,8 @@ func summarizeRanges(runs []StepMetrics) RangeMetrics {
 	minDrain, maxDrain := runs[0].OutboxDrainSec, runs[0].OutboxDrainSec
 	minLag, maxLag := runs[0].MaxOutboxLagSec, runs[0].MaxOutboxLagSec
 	minRet, maxRet := runs[0].OutcomeRetries, runs[0].OutcomeRetries
+	minCgCPU, maxCgCPU := runs[0].CgroupMeanCPU, runs[0].CgroupMeanCPU
+	minThrot, maxThrot := runs[0].CgroupNrThrottled, runs[0].CgroupNrThrottled
 
 	for _, r := range runs[1:] {
 		if r.ClaimsPerSec < minC { minC = r.ClaimsPerSec }
@@ -1118,42 +1464,50 @@ func summarizeRanges(runs []StepMetrics) RangeMetrics {
 
 		if r.OutcomeRetries < minRet { minRet = r.OutcomeRetries }
 		if r.OutcomeRetries > maxRet { maxRet = r.OutcomeRetries }
+
+		if r.CgroupMeanCPU < minCgCPU { minCgCPU = r.CgroupMeanCPU }
+		if r.CgroupMeanCPU > maxCgCPU { maxCgCPU = r.CgroupMeanCPU }
+
+		if r.CgroupNrThrottled < minThrot { minThrot = r.CgroupNrThrottled }
+		if r.CgroupNrThrottled > maxThrot { maxThrot = r.CgroupNrThrottled }
 	}
 
 	return RangeMetrics{
-		Scenario:           runs[0].Scenario,
-		QueryMode:          runs[0].QueryMode,
-		Workers:            runs[0].Workers,
-		NumLeads:           runs[0].NumLeads,
-		ClaimsPerSecRange:  fmt.Sprintf("[%.1f - %.1f]", minC, maxC),
-		RecordsPerSecRange: fmt.Sprintf("[%.1f - %.1f]", minR, maxR),
-		ClaimP50Range:      fmt.Sprintf("[%.1f - %.1f]", minCP50, maxCP50),
-		ClaimP99Range:      fmt.Sprintf("[%.1f - %.1f]", minCP99, maxCP99),
-		RecordP50Range:     fmt.Sprintf("[%.1f - %.1f]", minRP50, maxRP50),
-		RecordP99Range:     fmt.Sprintf("[%.1f - %.1f]", minRP99, maxRP99),
-		TotalP50Range:      fmt.Sprintf("[%.1f - %.1f]", minTP50, maxTP50),
-		TotalP99Range:      fmt.Sprintf("[%.1f - %.1f]", minTP99, maxTP99),
-		PoolWaitRange:      fmt.Sprintf("[%.2f - %.2f]", minWait, maxWait),
-		EmptyAcquiresRange: fmt.Sprintf("[%d - %d]", minEmpty, maxEmpty),
-		ActiveConnsRange:   fmt.Sprintf("[%d - %d]", minConn, maxConn),
-		LockWaitsRange:     fmt.Sprintf("[%d - %d]", minLock, maxLock),
-		PostgresCPURange:   fmt.Sprintf("[%.1f%% - %.1f%%]", minCPU, maxCPU),
-		OutboxDrainRange:   fmt.Sprintf("[%.2fs - %.2fs]", minDrain, maxDrain),
-		MaxOutboxLagRange:  fmt.Sprintf("[%.2fs - %.2fs]", minLag, maxLag),
-		RetriesRange:       fmt.Sprintf("[%d - %d]", minRet, maxRet),
+		Scenario:             runs[0].Scenario,
+		QueryMode:            runs[0].QueryMode,
+		Workers:              runs[0].Workers,
+		NumLeads:             runs[0].NumLeads,
+		ClaimsPerSecRange:    fmt.Sprintf("[%.1f - %.1f]", minC, maxC),
+		RecordsPerSecRange:   fmt.Sprintf("[%.1f - %.1f]", minR, maxR),
+		ClaimP50Range:        fmt.Sprintf("[%.1f - %.1f]", minCP50, maxCP50),
+		ClaimP99Range:        fmt.Sprintf("[%.1f - %.1f]", minCP99, maxCP99),
+		RecordP50Range:       fmt.Sprintf("[%.1f - %.1f]", minRP50, maxRP50),
+		RecordP99Range:       fmt.Sprintf("[%.1f - %.1f]", minRP99, maxRP99),
+		TotalP50Range:        fmt.Sprintf("[%.1f - %.1f]", minTP50, maxTP50),
+		TotalP99Range:        fmt.Sprintf("[%.1f - %.1f]", minTP99, maxTP99),
+		PoolWaitRange:        fmt.Sprintf("[%.2f - %.2f]", minWait, maxWait),
+		EmptyAcquiresRange:   fmt.Sprintf("[%d - %d]", minEmpty, maxEmpty),
+		ActiveConnsRange:     fmt.Sprintf("[%d - %d]", minConn, maxConn),
+		LockWaitsRange:       fmt.Sprintf("[%d - %d]", minLock, maxLock),
+		PostgresCPURange:     fmt.Sprintf("[%.1f%% - %.1f%%]", minCPU, maxCPU),
+		OutboxDrainRange:     fmt.Sprintf("[%.2fs - %.2fs]", minDrain, maxDrain),
+		MaxOutboxLagRange:    fmt.Sprintf("[%.2fs - %.2fs]", minLag, maxLag),
+		RetriesRange:         fmt.Sprintf("[%d - %d]", minRet, maxRet),
+		CgroupCPURange:       fmt.Sprintf("[%.1f%% - %.1f%%]", minCgCPU, maxCgCPU),
+		CgroupThrottledRange: fmt.Sprintf("[%d - %d]", minThrot, maxThrot),
 	}
 }
 
 func printRangeTable(results []RangeMetrics, mode string) {
-	fmt.Printf("\n==========================================================================================================================\n")
+	fmt.Printf("\n=======================================================================================================================================\n")
 	fmt.Printf("DIALPULSE BENCHMARK SUMMARY (Mode: %s) - Max Claim-and-Record Rate (No Dial Time)\n", mode)
-	fmt.Printf("==========================================================================================================================\n")
-	fmt.Printf("| %-6s | %-6s | %-3s | %-15s | %-15s | %-15s | %-15s | %-15s | %-8s | %-6s | %-8s |\n",
-		"Scen", "Mode", "W", "Throughput/s", "Tot p50 (ms)", "Tot p99 (ms)", "Claim p50 (ms)", "Record p50 (ms)", "PG CPU%", "Locks", "Retries")
-	fmt.Println("|--------|--------|-----|-----------------|-----------------|-----------------|-----------------|-----------------|----------|--------|----------|")
+	fmt.Printf("=======================================================================================================================================\n")
+	fmt.Printf("| %-6s | %-7s | %-3s | %-15s | %-15s | %-15s | %-15s | %-15s | %-10s | %-10s | %-6s | %-8s |\n",
+		"Scen", "Mode", "W", "Throughput/s", "Tot p50 (ms)", "Tot p99 (ms)", "Claim p50 (ms)", "Record p50 (ms)", "PG CPU%", "Cgroup CPU", "Locks", "Retries")
+	fmt.Println("|--------|---------|-----|-----------------|-----------------|-----------------|-----------------|-----------------|------------|------------|--------|----------|")
 	for _, m := range results {
-		fmt.Printf("| %-6s | %-6s | %-3d | %-15s | %-15s | %-15s | %-15s | %-15s | %-8s | %-6s | %-8s |\n",
-			m.Scenario, m.QueryMode, m.Workers, m.ClaimsPerSecRange, m.TotalP50Range, m.TotalP99Range, m.ClaimP50Range, m.RecordP50Range, m.PostgresCPURange, m.LockWaitsRange, m.RetriesRange)
+		fmt.Printf("| %-6s | %-7s | %-3d | %-15s | %-15s | %-15s | %-15s | %-15s | %-10s | %-10s | %-6s | %-8s |\n",
+			m.Scenario, m.QueryMode, m.Workers, m.ClaimsPerSecRange, m.TotalP50Range, m.TotalP99Range, m.ClaimP50Range, m.RecordP50Range, m.PostgresCPURange, m.CgroupCPURange, m.LockWaitsRange, m.RetriesRange)
 	}
-	fmt.Println("==========================================================================================================================")
+	fmt.Println("=======================================================================================================================================")
 }
