@@ -61,5 +61,7 @@ jobs:
           REQUIRE_NATS: "1"
         run: go test -v -race ./tests/...
 
-      - name: Build Server Binary
-        run: go build -v -o bin/dialpulse ./cmd/server
+      - name: Build Server and Loadgen Binaries
+        run: |
+          go build -v -o bin/dialpulse ./cmd/server
+          go build -v -o bin/loadgen ./cmd/loadgen
