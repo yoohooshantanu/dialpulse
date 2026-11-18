@@ -22,7 +22,9 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 	alaska, _ := time.LoadLocation("America/Anchorage")
 	hawaii, _ := time.LoadLocation("Pacific/Honolulu")
 
+	// -------
 	// If system tzdata is unavailable, fallback to fixed UTC offsets
+	// -------
 	if eastern == nil {
 		eastern = time.FixedZone("EST", -5*3600)
 	}
@@ -54,12 +56,16 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 		"615": {central}, "314": {central}, "612": {central}, "504": {central},
 		// Mountain (Denver observes DST)
 		"303": {mountain}, "720": {mountain}, "801": {mountain}, "915": {mountain},
+		// -------
 		// Arizona non-DST (America/Phoenix is UTC-7 year-round)
+		// -------
 		"602": {phoenix}, "480": {phoenix}, "623": {phoenix},
+		// -------
 		// Area code 928 covers both the Navajo Nation (which observes DST / Mountain Time)
 		// and Hopi / rural Arizona (which does not observe DST / Phoenix Time).
 		// PredictiveDialer enforces the conservative intersection: dials are permitted only when
 		// BOTH Phoenix and Navajo (Denver) local times fall within 08:00 - 21:00.
+		// -------
 		"928": {phoenix, mountain},
 		// Pacific
 		"206": {pacific}, "415": {pacific}, "650": {pacific}, "310": {pacific}, "213": {pacific},
@@ -101,7 +107,9 @@ func (g *TimezoneGovernor) CanCall(phone string, now ...time.Time) error {
 		localTime := currentTime.In(loc)
 		hour := localTime.Hour()
 
+		// -------
 		// Legal dialing window: 08:00 AM (inclusive) to 09:00 PM (exclusive)
+		// -------
 		if hour < 8 || hour >= 21 {
 			return model.ErrTimezoneRestricted
 		}

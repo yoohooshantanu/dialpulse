@@ -264,7 +264,6 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 		resetTables(ctx, pool)
 		ensureCampaign(ctx, pool, cfg.CampaignID)
 
-		// Seed 1,000,000 leads
 		fmt.Println("Seeding 1,000,000 leads (batch size 10,000)...")
 		seedStart := time.Now()
 		totalLeads := 1000000
@@ -276,8 +275,10 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 			rows := make([][]interface{}, batchSize)
 			for i := 0; i < batchSize; i++ {
 				idx := inserted + i
+				// -------
 				// Note: time.Now().UTC() is called per row inside the loop. Due to fast CPU clock resolution (~1-100us per call),
 				// 1M leads produce ~5,652 distinct timestamps across the 100 CopyFrom batches (~177 leads per distinct timestamp tick).
+				// -------
 				rows[i] = []interface{}{
 					fmt.Sprintf("lead-1m-%07d", idx),
 					cfg.CampaignID,
@@ -382,26 +383,34 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 	}
 	fmt.Printf("===================================================================================================\n")
 
+	// -------
 	// Now run EXPLAIN (ANALYZE, BUFFERS) on the partly drained table (>20,000 leads drained!)
+	// -------
 	fmt.Printf("\n=================================================================\n")
 	fmt.Printf("EXPLAIN (ANALYZE, BUFFERS) ON PARTLY DRAINED TABLE (%d Leads Processed)\n", totalDrainedSoFar)
 	fmt.Printf("=================================================================\n")
 	limit := 50
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
-	// 1. Unified Query with Migration 001 idx_leads_dispatch
+	// -------
+	// Unified Query with Migration 001 idx_leads_dispatch
+	// -------
 	_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; DROP INDEX IF EXISTS idx_leads_partial_queued;`)
 	_, _ = pool.Exec(ctx, "ANALYZE leads;")
 	fmt.Println("\n--- [Partly Drained] Unified Query with idx_leads_dispatch ---")
 	runExplain(ctx, pool, unifiedQuery, "Unified Query (Migration 001)", cfg.CampaignID, limit, intervalStr)
 
-	// 2. Split Query with Composite Index idx_leads_comp
+	// -------
+	// Split Query with Composite Index idx_leads_comp
+	// -------
 	_, _ = pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC);`)
 	_, _ = pool.Exec(ctx, "ANALYZE leads;")
 	fmt.Println("\n--- [Partly Drained] Split Fast Path with idx_leads_comp (Composite Index) ---")
 	runExplain(ctx, pool, fastPathQuery, "Split Fast Path (Composite Index)", cfg.CampaignID, limit, intervalStr)
 
-	// 3. Split Query with Partial Index idx_leads_partial_queued
+	// -------
+	// Split Query with Partial Index idx_leads_partial_queued
+	// -------
 	_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; CREATE INDEX IF NOT EXISTS idx_leads_partial_queued ON leads (campaign_id, priority DESC, created_at ASC) WHERE status = 'QUEUED';`)
 	_, _ = pool.Exec(ctx, "ANALYZE leads;")
 	fmt.Println("\n--- [Partly Drained] Split Fast Path with idx_leads_partial_queued (Partial Index) ---")
@@ -532,11 +541,15 @@ func runIndexExperiment(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 	limit := cfg.BatchSize
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
-	// 1. Current Unified Query with existing index: idx_leads_dispatch ON leads (campaign_id, status, priority DESC, next_attempt_at ASC)
+	// -------
+	// Current Unified Query with existing index: idx_leads_dispatch ON leads (campaign_id, status, priority DESC, next_attempt_at ASC)
+	// -------
 	fmt.Println("\n--- [Experiment 1] Current Unified Query with Migration 001 Index ---")
 	runExplain(ctx, pool, unifiedQuery, "Unified Query (Migration 001 idx_leads_dispatch)", cfg.CampaignID, limit, intervalStr)
 
-	// 2. Add Partial Index: idx_leads_queued ON leads (campaign_id, priority DESC, created_at ASC) WHERE status = 'QUEUED'
+	// -------
+	// Add Partial Index: idx_leads_queued ON leads (campaign_id, priority DESC, created_at ASC) WHERE status = 'QUEUED'
+	// -------
 	fmt.Println("\n--- [Experiment 2] Adding Partial Index on status = 'QUEUED' ---")
 	_, err := pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_leads_queued ON leads (campaign_id, priority DESC, created_at ASC) WHERE status = 'QUEUED';`)
 	if err != nil {
@@ -545,7 +558,9 @@ func runIndexExperiment(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 	_, _ = pool.Exec(ctx, "ANALYZE leads;")
 	runExplain(ctx, pool, unifiedQuery, "Unified Query with Partial Index (status='QUEUED')", cfg.CampaignID, limit, intervalStr)
 
-	// 3. Add Composite Index: idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC)
+	// -------
+	// Add Composite Index: idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC)
+	// -------
 	fmt.Println("\n--- [Experiment 3] Adding Composite Index on (campaign_id, priority DESC, created_at ASC) ---")
 	_, err = pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_leads_comp ON leads (campaign_id, priority DESC, created_at ASC);`)
 	if err != nil {
@@ -554,11 +569,15 @@ func runIndexExperiment(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 	_, _ = pool.Exec(ctx, "ANALYZE leads;")
 	runExplain(ctx, pool, unifiedQuery, "Unified Query with Composite Index (campaign_id, priority DESC, created_at ASC)", cfg.CampaignID, limit, intervalStr)
 
-	// 4. Split Claim: Fast Path (QUEUED only)
+	// -------
+	// Split Claim: Fast Path (QUEUED only)
+	// -------
 	fmt.Println("\n--- [Experiment 4] Split Claim: Fast Path (status = 'QUEUED' only) ---")
 	runExplain(ctx, pool, fastPathQuery, "Split Claim Fast Path (status='QUEUED')", cfg.CampaignID, limit, intervalStr)
 
-	// 5. Split Claim: Expired Lease Path (status = 'DIALING' AND locked_at < clock_timestamp() - interval)
+	// -------
+	// Split Claim: Expired Lease Path (status = 'DIALING' AND locked_at < clock_timestamp() - interval)
+	// -------
 	fmt.Println("\n--- [Experiment 5] Split Claim: Expired Lease Fallback Path ---")
 	runExplain(ctx, pool, expiredPathQuery, "Split Claim Expired Lease Path", cfg.CampaignID, limit, intervalStr)
 }
@@ -657,7 +676,9 @@ func (h *NoOpConsumerHandler) HandleEventTx(ctx context.Context, tx pgx.Tx, even
 }
 
 func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.PostgresRepository, cfg Config) (StepMetrics, error) {
+	// -------
 	// Setup index configuration based on QueryMode
+	// -------
 	if cfg.QueryMode == "unified" {
 		_, _ = pool.Exec(ctx, `DROP INDEX IF EXISTS idx_leads_comp; DROP INDEX IF EXISTS idx_leads_queued; DROP INDEX IF EXISTS idx_leads_partial_queued;`)
 	} else if cfg.QueryMode == "partial" {
@@ -778,7 +799,9 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 					atomic.StoreInt32(&maxLockWaits, int32(lockWaits))
 				}
 
+				// -------
 				// Scrape exact wait_event_type / wait_event names
+				// -------
 				rows, err := pool.Query(ctx, `
 					SELECT wait_event_type, wait_event, COUNT(*) 
 					FROM pg_stat_activity 
@@ -886,7 +909,9 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 				for _, lead := range leads {
 					totalClaimed.Add(1)
 
+					// -------
 					// INVARIANT 1: No duplicate claim
+					// -------
 					if _, loaded := claimedLeadIDs.LoadOrStore(lead.ID, wID); loaded {
 						log.Fatalf("FATAL: Invariant violated! Lead %s claimed twice!", lead.ID)
 					}

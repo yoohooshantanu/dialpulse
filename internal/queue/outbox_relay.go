@@ -50,10 +50,18 @@ func DefaultOutboxRelayConfig() OutboxRelayConfig {
 //
 // TRANSACTION & ORDERING GUARANTEES:
 // Each batch executes inside a single database transaction:
-//  1. SELECT ... FOR UPDATE SKIP LOCKED (bounded by BatchSize).
-//  2. Publish each message with Nats-Msg-Id set to event ID and individual timeout.
-//  3. UPDATE outbox_events SET published_at = clock_timestamp() WHERE id = ANY(...).
-//  4. COMMIT.
+// -------
+// SELECT ... FOR UPDATE SKIP LOCKED (bounded by BatchSize).
+// -------
+// -------
+// Publish each message with Nats-Msg-Id set to event ID and individual timeout.
+// -------
+// -------
+// UPDATE outbox_events SET published_at = clock_timestamp() WHERE id = ANY(...).
+// -------
+// -------
+// COMMIT.
+// -------
 //
 // If any publish fails or times out, the transaction rolls back, releasing the row locks
 // so unpublished events remain intact and will be retried in a subsequent iteration.
@@ -109,7 +117,9 @@ func (r *OutboxRelay) ProcessBatch(ctx context.Context) (int, error) {
 	}
 	defer tx.Rollback(ctx)
 
+	// -------
 	// Claim unpublished rows with exclusive row lock, skipping locked rows claimed by competing relays
+	// -------
 	query := `
 		SELECT id, aggregate_type, aggregate_id, event_type, payload, created_at
 		FROM outbox_events

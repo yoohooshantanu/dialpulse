@@ -88,25 +88,32 @@ func (p *PredictivePacer) CalculateDialsNeeded(idleAgents, activeCalls int) int 
 		return 0
 	}
 
-	// 1. Calculate rolling answer rate with Bayesian prior weighting
+	// -------
+	// Calculate rolling answer rate with Bayesian prior weighting
+	// -------
 	answerRate := p.cfg.HistoricalAnswerRate
 	if p.dialed > 50 && p.answered > 0 {
 		rollingAnswer := float64(p.answered) / float64(p.dialed)
+		// -------
 		// 80% weight on rolling historical, 20% prior
+		// -------
 		answerRate = (rollingAnswer * 0.8) + (p.cfg.HistoricalAnswerRate * 0.2)
 	}
 	if answerRate < 0.05 {
 		answerRate = 0.05 // Floor at 5% to prevent division runaway
 	}
 
-	// 2. Calculate current abandonment rate: Abandoned / Total Answered
+	// -------
+	// Calculate current abandonment rate: Abandoned / Total Answered
+	// -------
 	abandonRate := 0.0
 	if p.answered > 0 {
 		abandonRate = float64(p.abandoned) / float64(p.answered)
 	}
 
-	// 3. Estimate agents expected to become free during the ring window:
-	// Based on Little's Law / Erlang queue dynamics:
+	// -------
+	// Estimate agents expected to become free during ring window (Little's Law / Erlang queue dynamics)
+	// -------
 	avgHandle := p.cfg.AverageHandleSec
 	if avgHandle <= 0 {
 		avgHandle = 90.0
@@ -114,22 +121,32 @@ func (p *PredictivePacer) CalculateDialsNeeded(idleAgents, activeCalls int) int 
 	freeingSoon := float64(activeCalls) * (p.cfg.AverageRingSec / avgHandle)
 	effectiveCapacity := float64(idleAgents) + freeingSoon
 
-	// 4. Compute baseline multiplier
+	// -------
+	// Compute baseline multiplier
+	// -------
 	multiplier := effectiveCapacity / answerRate
 
-	// 5. Apply Legal Drop-Rate Governor (Brake Factor)
+	// -------
+	// Apply Legal Drop-Rate Governor (Brake Factor)
+	// -------
+	// -------
 	// If abandonment is near or exceeds target, aggressively throttle multiplier
+	// -------
 	targetAbandon := p.cfg.TargetAbandonRate
 	if targetAbandon <= 0 {
 		targetAbandon = 0.025
 	}
 	if abandonRate >= targetAbandon*0.9 {
+		// -------
 		// Approaching ceiling: throttle multiplier by penalty ratio
+		// -------
 		brake := 1.0 - math.Min(1.0, (abandonRate-targetAbandon*0.9)/(targetAbandon*0.3))
 		multiplier *= math.Max(0.2, brake)
 	}
 	if abandonRate >= targetAbandon {
+		// -------
 		// Hard safety cap: fall back to progressive mode (1 dial per idle agent)
+		// -------
 		multiplier = float64(idleAgents)
 	}
 

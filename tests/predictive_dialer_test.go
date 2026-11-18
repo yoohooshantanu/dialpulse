@@ -54,7 +54,6 @@ func TestDNCBloomFilter(t *testing.T) {
 		t.Fatalf("expected count %d, got %d", len(testNumbers), bf.Count())
 	}
 
-	// Verify all inserted numbers match regardless of format
 	for _, num := range testNumbers {
 		if !bf.Contains(num) {
 			t.Errorf("expected DNC filter to contain %s", num)
@@ -87,13 +86,17 @@ func TestTimezoneGovernor(t *testing.T) {
 		t.Errorf("expected 10:00 AM NY time to be allowed, got error: %v", err)
 	}
 
+	// -------
 	// 11:30 PM NY time -> Blocked by curfew
+	// -------
 	curfewTime := time.Date(2026, 11, 15, 23, 30, 0, 0, loc)
 	if err := gov.CanCall(nyPhone, curfewTime); err != model.ErrTimezoneRestricted {
 		t.Errorf("expected curfew error at 11:30 PM, got: %v", err)
 	}
 
+	// -------
 	// 06:00 AM NY time -> Blocked by morning curfew
+	// -------
 	earlyTime := time.Date(2026, 11, 15, 6, 0, 0, 0, loc)
 	if err := gov.CanCall(nyPhone, earlyTime); err != model.ErrTimezoneRestricted {
 		t.Errorf("expected curfew error at 06:00 AM, got: %v", err)
@@ -113,13 +116,17 @@ func TestPredictivePacerCalculation(t *testing.T) {
 
 	p := pacer.NewPredictivePacer(camp)
 
+	// -------
 	// Case 1: 10 idle agents, 0 active calls -> should dial ~35 calls (capped at 3.5 * 10)
+	// -------
 	dials := p.CalculateDialsNeeded(10, 0)
 	if dials < 10 || dials > 35 {
 		t.Errorf("expected dials between 10 and 35, got %d", dials)
 	}
 
+	// -------
 	// Case 2: Record high abandonment (simulate exceeding 2.5% FTC limit)
+	// -------
 	for i := 0; i < 90; i++ {
 		p.RecordOutcome(model.StatusConnected)
 	}
@@ -127,7 +134,9 @@ func TestPredictivePacerCalculation(t *testing.T) {
 		p.RecordOutcome(model.StatusAbandoned) // 10% abandonment rate!
 	}
 
+	// -------
 	// Pacer must aggressively brake down to progressive mode (<= idle agents)
+	// -------
 	throttledDials := p.CalculateDialsNeeded(5, 5)
 	if throttledDials > 5 {
 		t.Errorf("expected pacer to throttle down to progressive mode under high abandonment, got %d dials", throttledDials)
@@ -194,7 +203,6 @@ func TestCampaignExecutionLifecycle(t *testing.T) {
 	_, _, _ = engine.IngestLeads(context.Background(), leads)
 	_ = engine.Start()
 
-	// Wait for background dispatch ticks
 	time.Sleep(200 * time.Millisecond)
 
 	stats := engine.GetStats()
@@ -208,14 +216,18 @@ func TestCampaignExecutionLifecycle(t *testing.T) {
 func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
 	gov := timezone.NewTimezoneGovernor()
 
-	// 1. Verify NextPermissibleCallTime calculation
+	// -------
+	// Verify NextPermissibleCallTime calculation
+	// -------
 	nyPhone := "2125551234"
 	loc, _ := time.LoadLocation("America/New_York")
 	if loc == nil {
 		loc = time.FixedZone("EST", -5*3600)
 	}
 
+	// -------
 	// At 11:30 PM, next permissible should be tomorrow 8:00 AM
+	// -------
 	nightTime := time.Date(2026, 11, 15, 23, 30, 0, 0, loc)
 	nextCallTime := gov.NextPermissibleCallTime(nyPhone, nightTime)
 	expectedTarget := time.Date(2026, 11, 16, 8, 0, 0, 0, loc).UTC()
@@ -224,7 +236,9 @@ func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
 		t.Errorf("expected next permissible time %v, got %v", expectedTarget, nextCallTime)
 	}
 
-	// 2. Verify engine holdoff and GetLead
+	// -------
+	// Verify engine holdoff and GetLead
+	// -------
 	camp := &model.Campaign{
 		ID:              "camp_holdoff_test",
 		AllocatedAgents: 5,
@@ -240,14 +254,18 @@ func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
 	}
 	_, _, _ = engine.IngestLeads(context.Background(), []*model.Lead{lead})
 
+	// -------
 	// Set lead NextAttemptAt 1 hour into future
+	// -------
 	future := time.Now().UTC().Add(1 * time.Hour)
 	lead.NextAttemptAt = &future
 
 	_ = engine.Start()
 	time.Sleep(120 * time.Millisecond) // Let ticker fire multiple times
 
+	// -------
 	// The lead must NOT have been dialed because NextAttemptAt is in the future
+	// -------
 	retrieved, ok := engine.GetLead("lead_curfew_hold")
 	if !ok {
 		t.Fatalf("expected to find lead by ID")
@@ -256,7 +274,9 @@ func TestCurfewHoldoffNoBusySpinAndCleanShutdown(t *testing.T) {
 		t.Errorf("expected lead to remain held off, got status %s", retrieved.Status)
 	}
 
-	// 3. Graceful termination drains workers cleanly
+	// -------
+	// Graceful termination drains workers cleanly
+	// -------
 	engine.Stop()
 }
 
@@ -372,7 +392,9 @@ func TestMultiCampaignConcurrencyIsolation(t *testing.T) {
 		}
 	}
 
+	// -------
 	// Verify each campaign maintains independent stats
+	// -------
 	for i, e := range engines {
 		stats := e.GetStats()
 		if stats.TotalLeads != 2 {
@@ -416,7 +438,9 @@ func TestBusyCallRetryBackoff(t *testing.T) {
 		t.Fatalf("expected to find lead")
 	}
 
+	// -------
 	// Must have been attempted once and rescheduled
+	// -------
 	if retrieved.Attempts != 1 {
 		t.Errorf("expected 1 attempt, got %d", retrieved.Attempts)
 	}
@@ -466,7 +490,9 @@ func TestStoragePersistenceAndIdempotency(t *testing.T) {
 		t.Errorf("expected 2 inserted, 1 duplicate, got %d, %d", len(insertedIDs), duplicates)
 	}
 
+	// -------
 	// Claim leads to obtain active lease token for l1
+	// -------
 	claimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 2, "test-worker-store")
 	if err != nil || len(claimed) != 2 {
 		t.Fatalf("failed claiming leads: %v", err)
@@ -482,7 +508,9 @@ func TestStoragePersistenceAndIdempotency(t *testing.T) {
 		t.Fatalf("expected l1 to be claimed")
 	}
 
+	// -------
 	// Persist outcome transactionally to DLQ with active lease token
+	// -------
 	attempt := &model.CallAttempt{
 		ID:             "att_1",
 		CampaignID:     camp.ID,
@@ -545,7 +573,9 @@ func TestInFlightDialLimiting(t *testing.T) {
 	time.Sleep(120 * time.Millisecond)
 
 	stats := engine.GetStats()
+	// -------
 	// Because in-flight ringing calls are subtracted from capacity, the engine must NOT have dispatched all 20 leads
+	// -------
 	if stats.DialedCalls > 10 {
 		t.Errorf("expected in-flight limiter to throttle dials, got %d dials", stats.DialedCalls)
 	}
@@ -576,9 +606,11 @@ func TestPacerSingleOutcomeAccounting(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	stats := engine.GetStats()
+	// -------
 	// Out of 3 simultaneous answers with 1 agent slot:
 	// Exactly 1 must connect and 2 must abandon. Total answered = 3.
 	// Outcomes must be recorded exactly once without double counting
+	// -------
 	if stats.ConnectedCalls != 1 {
 		t.Errorf("expected exactly 1 connected call, got %d", stats.ConnectedCalls)
 	}
@@ -626,7 +658,6 @@ func TestSynchronousIngestRejectsOnStorageFailure(t *testing.T) {
 		t.Errorf("expected 0 duplicates on error, got %d", duplicates)
 	}
 
-	// Verify nothing was admitted to in-memory queue
 	stats := engine.GetStats()
 	if stats.TotalLeads != 0 {
 		t.Errorf("expected 0 leads admitted to queue, got %d", stats.TotalLeads)
@@ -643,7 +674,9 @@ func TestDatabaseDuplicateRejectedAfterRestart(t *testing.T) {
 		AllocatedAgents: 5,
 	}
 
-	// 1. Initial application run: ingest lead
+	// -------
+	// Initial application run: ingest lead
+	// -------
 	engine1 := queue.NewCampaignEngine(camp, nil, nil, nil)
 	engine1.SetRepository(sharedRepo)
 
@@ -656,7 +689,9 @@ func TestDatabaseDuplicateRejectedAfterRestart(t *testing.T) {
 		t.Fatalf("engine1 ingest failed: accepted=%d, dups=%d, err=%v", accepted1, dups1, err1)
 	}
 
-	// 2. Simulate application restart: new engine instance with empty in-memory index, but same DB
+	// -------
+	// Simulate application restart: new engine instance with empty in-memory index, but same DB
+	// -------
 	engine2 := queue.NewCampaignEngine(camp, nil, nil, nil)
 	engine2.SetRepository(sharedRepo)
 
@@ -670,7 +705,9 @@ func TestDatabaseDuplicateRejectedAfterRestart(t *testing.T) {
 		t.Fatalf("unexpected error on engine2 ingest: %v", err2)
 	}
 
+	// -------
 	// The database correctly rejected the duplicate, so engine2 must NOT admit it to the dispatch queue!
+	// -------
 	if accepted2 != 0 {
 		t.Errorf("expected 0 accepted leads in restarted engine, got %d", accepted2)
 	}
@@ -683,7 +720,9 @@ func TestDatabaseDuplicateRejectedAfterRestart(t *testing.T) {
 		t.Errorf("expected 0 total leads admitted to restarted engine queue, got %d", stats2.TotalLeads)
 	}
 
+	// -------
 	// Verify lead was never stored in engine2 memory
+	// -------
 	if _, ok := engine2.GetLead(lead2.ID); ok {
 		t.Errorf("duplicate lead must NOT exist in restarted engine memory")
 	}
@@ -712,7 +751,9 @@ func TestLivePostgresRestartIdempotency(t *testing.T) {
 		t.Fatalf("failed saving campaign to live postgres: %v", err)
 	}
 
-	// 1. Initial engine run: ingest lead
+	// -------
+	// Initial engine run: ingest lead
+	// -------
 	engine1 := queue.NewCampaignEngine(camp, nil, nil, nil)
 	engine1.SetRepository(pgRepo)
 
@@ -726,7 +767,9 @@ func TestLivePostgresRestartIdempotency(t *testing.T) {
 		t.Fatalf("engine1 live postgres ingest failed: accepted=%d, dups=%d, err=%v", accepted1, dups1, err1)
 	}
 
-	// 2. Restart engine: new instance with empty in-memory state, connected to same live PostgreSQL
+	// -------
+	// Restart engine: new instance with empty in-memory state, connected to same live PostgreSQL
+	// -------
 	engine2 := queue.NewCampaignEngine(camp, nil, nil, nil)
 	engine2.SetRepository(pgRepo)
 
@@ -740,7 +783,9 @@ func TestLivePostgresRestartIdempotency(t *testing.T) {
 		t.Fatalf("live postgres engine2 ingest error: %v", err2)
 	}
 
+	// -------
 	// Live PostgreSQL ON CONFLICT (campaign_id, phone_number) MUST reject the duplicate
+	// -------
 	if accepted2 != 0 {
 		t.Errorf("live postgres: expected 0 accepted leads on duplicate restart, got %d", accepted2)
 	}
@@ -857,7 +902,9 @@ func TestServerStartupCampaignRecovery(t *testing.T) {
 		t.Fatalf("failed ingesting leads: %v", err)
 	}
 
+	// -------
 	// Verify repo returns active campaigns and active leads
+	// -------
 	camps, err := repo.ListActiveCampaigns(ctx)
 	if err != nil || len(camps) != 1 {
 		t.Fatalf("expected 1 active campaign, got %d, err: %v", len(camps), err)
@@ -868,7 +915,9 @@ func TestServerStartupCampaignRecovery(t *testing.T) {
 		t.Fatalf("expected 3 active leads from storage, got %d, err: %v", len(activeLeads), err)
 	}
 
+	// -------
 	// Simulate fresh server instance hydrating from storage
+	// -------
 	restartedEngine := queue.NewCampaignEngine(camp, nil, nil, nil)
 	restartedEngine.SetRepository(repo)
 	restartedEngine.HydrateLeads(activeLeads)
@@ -878,7 +927,9 @@ func TestServerStartupCampaignRecovery(t *testing.T) {
 		t.Errorf("expected 3 recovered leads in engine memory, got %d", stats.TotalLeads)
 	}
 
+	// -------
 	// Verify highest priority lead is dialed first
+	// -------
 	l1, ok1 := restartedEngine.GetLead("rec_lead_3")
 	if !ok1 || l1.Priority != 90 {
 		t.Errorf("expected highest priority lead rec_lead_3 to be loaded")
@@ -921,7 +972,9 @@ func TestAtomicTransactionalOutcomePersistence(t *testing.T) {
 		CreatedAt:      time.Now().UTC(),
 	}
 
+	// -------
 	// Atomically persist outcome with valid lease token
+	// -------
 	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_NORMAL", nil, attempt, 1, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("expected atomic outcome persistence to succeed: %v", err)
@@ -932,7 +985,9 @@ func TestAtomicTransactionalOutcomePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed fetching leads: %v", err)
 	}
+	// -------
 	// Status was CONNECTED, so should no longer be in QUEUED/DIALING active queue
+	// -------
 	for _, l := range activeLeads {
 		if l.ID == lead.ID && l.Status != model.StatusConnected {
 			t.Errorf("expected lead status to be CONNECTED, got %s", l.Status)
@@ -952,7 +1007,9 @@ func TestTickDistributedClaimingIntegration(t *testing.T) {
 	}
 	_ = repo.SaveCampaign(ctx, camp)
 
+	// -------
 	// Ingest leads strictly to repository (NOT hydrating engine memory queue)
+	// -------
 	leads := []*model.Lead{
 		{ID: "tick_lead_1", CampaignID: camp.ID, PhoneNumber: "+14155551111", Priority: 10, Status: model.StatusQueued, CreatedAt: time.Now().UTC()},
 		{ID: "tick_lead_2", CampaignID: camp.ID, PhoneNumber: "+14155552222", Priority: 20, Status: model.StatusQueued, CreatedAt: time.Now().UTC()},
@@ -965,18 +1022,24 @@ func TestTickDistributedClaimingIntegration(t *testing.T) {
 	engine := queue.NewCampaignEngine(camp, nil, nil, nil)
 	engine.SetRepository(repo)
 
+	// -------
 	// Engine starts with 0 leads in pendingQueue
+	// -------
 	statsBefore := engine.GetStats()
 	if statsBefore.TotalLeads != 0 {
 		t.Fatalf("expected 0 in-memory leads before tick, got %d", statsBefore.TotalLeads)
 	}
 
+	// -------
 	// Start engine: tick() MUST pull from repository via ClaimPendingLeads
+	// -------
 	_ = engine.Start()
 	time.Sleep(150 * time.Millisecond)
 	engine.Stop()
 
+	// -------
 	// Verify leads were claimed from repo and dispatched
+	// -------
 	statsAfter := engine.GetStats()
 	if statsAfter.DialedCalls < 2 {
 		t.Errorf("expected at least 2 dialed calls via distributed claim in tick, got %d", statsAfter.DialedCalls)
@@ -1022,7 +1085,9 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 		t.Fatalf("failed batch ingesting live leads: %v", err)
 	}
 
-	// 1. Genuinely concurrent competing workers against live PostgreSQL: 4 workers simultaneously competing for 20 leads
+	// -------
+	// Genuinely concurrent competing workers against live PostgreSQL: 4 workers simultaneously competing for 20 leads
+	// -------
 	const numWorkers = 4
 	const batchPerWorker = 5
 	var wg sync.WaitGroup
@@ -1063,7 +1128,9 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 		t.Fatalf("expected all %d leads to be claimed, got %d", numLeads, totalClaimed)
 	}
 
-	// 2. Expired Lease Recovery: Simulate worker crash during call
+	// -------
+	// Expired Lease Recovery: Simulate worker crash during call
+	// -------
 	campCrashID := "camp_crash_live_" + uuid.NewString()[:8]
 	campCrash := &model.Campaign{
 		ID:                campCrashID,
@@ -1087,7 +1154,9 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 	}
 	_, _, _ = pgRepo.IngestLeadsIdempotent(ctx, []*model.Lead{crashedLead})
 
+	// -------
 	// Manually simulate expired lock (> 2 min ago) for worker crash
+	// -------
 	_, err = pgRepo.ClaimPendingLeads(ctx, campCrash.ID, 1, "crashed-worker-old")
 	if err != nil {
 		t.Fatalf("failed initial claim for crash simulation: %v", err)
@@ -1097,7 +1166,9 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 		t.Fatalf("failed backdating lock for crash simulation: %v", err)
 	}
 
+	// -------
 	// Reclaim expired lease with standard 2m TTL
+	// -------
 	reclaimedCount, err := pgRepo.ReclaimExpiredLeases(ctx, campCrash.ID, 2*time.Minute)
 	if err != nil {
 		t.Fatalf("failed reclaiming expired leases: %v", err)
@@ -1106,7 +1177,9 @@ func TestLivePostgresDistributedClaimingAndLeaseRecovery(t *testing.T) {
 		t.Errorf("expected 1 expired lease reclaimed, got %d", reclaimedCount)
 	}
 
+	// -------
 	// Active worker now claims: must successfully pick up the orphaned lead
+	// -------
 	recovered, err := pgRepo.ClaimPendingLeads(ctx, campCrash.ID, 1, "surviving-worker-new")
 	if err != nil {
 		t.Fatalf("failed claiming recovered lead: %v", err)
@@ -1191,7 +1264,9 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 		},
 	}
 
+	// -------
 	// Instantiate two independent running CampaignEngine instances sharing PostgreSQL
+	// -------
 	camp1 := *camp
 	camp2 := *camp
 	engine1 := queue.NewCampaignEngine(&camp1, nil, nil, recordingDialer)
@@ -1200,7 +1275,9 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 	engine2 := queue.NewCampaignEngine(&camp2, nil, nil, recordingDialer)
 	engine2.SetRepository(pgRepo)
 
+	// -------
 	// Launch both engines simultaneously via Start() -> tick() background dispatch loops
+	// -------
 	if err := engine1.Start(); err != nil {
 		t.Fatalf("failed starting engine1: %v", err)
 	}
@@ -1212,7 +1289,6 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 		t.Fatalf("expected both engines to be actively running")
 	}
 
-	// Wait for background tick loops to process all leads
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		dialMu.Lock()
@@ -1234,7 +1310,9 @@ func TestLivePostgresCompetingEnginesSchedulerDispatch(t *testing.T) {
 	if len(dialCounts) != numLeads {
 		t.Fatalf("expected all %d leads dialed, got %d", numLeads, len(dialCounts))
 	}
+	// -------
 	// Assert zero double-dialing across competing scheduler engines
+	// -------
 	for leadID, count := range dialCounts {
 		if count > 1 {
 			t.Errorf("lead %s was dialed %d times (expected exactly 1 dial across engines)", leadID, count)
@@ -1258,7 +1336,9 @@ func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
 	}
 	defer pgRepo.Close()
 
-	// 1. Instance 1 registers formatted US number with spaces, parens, and country code
+	// -------
+	// Instance 1 registers formatted US number with spaces, parens, and country code
+	// -------
 	formattedDNC := fmt.Sprintf("+1 (800) 555-%04d", rand.Intn(10000))
 	if err := pgRepo.AddDNCNumbers(ctx, []string{formattedDNC}); err != nil {
 		t.Fatalf("failed adding DNC number to live postgres: %v", err)
@@ -1267,8 +1347,12 @@ func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
 	// Canonical 10-digit number
 	normDNC := dnc.NormalizeNumber(formattedDNC)
 
-	// 2. Cross-Instance Normalization Verification:
+	// -------
+	// Cross-Instance Normalization Verification:
+	// -------
+	// -------
 	// Both raw formatted, stripped E.164 (+1800...), and local 10-digit formats MUST match in PostgreSQL!
+	// -------
 	testQueries := []string{
 		formattedDNC,
 		"+1" + normDNC,
@@ -1285,7 +1369,9 @@ func TestLivePostgresDNCPersistenceAndCrossInstanceScreening(t *testing.T) {
 		}
 	}
 
-	// 3. Instance 2 engine without bloom filter screening must drop normalized lead to DLQ
+	// -------
+	// Instance 2 engine without bloom filter screening must drop normalized lead to DLQ
+	// -------
 	camp := &model.Campaign{
 		ID:              "camp_dnc_cross_" + uuid.NewString()[:8],
 		AllocatedAgents: 5,
@@ -1381,20 +1467,26 @@ func TestLivePostgresDurableAttemptStartPersistenceCrashSafety(t *testing.T) {
 		t.Fatalf("failed ingesting lead: %v", err)
 	}
 
-	// 1. Worker reserves lead
+	// -------
+	// Worker reserves lead
+	// -------
 	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-1")
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("failed claiming lead: %v", err)
 	}
 
-	// 2. Prior to carrier dial, RecordAttemptStart writes attempts=1 and IN_PROGRESS attempt record durably to PostgreSQL
+	// -------
+	// Prior to carrier dial, RecordAttemptStart writes attempts=1 and IN_PROGRESS attempt record durably to PostgreSQL
+	// -------
 	attemptID := uuid.NewString()
 	err = pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("failed recording attempt start on live postgres: %v", err)
 	}
 
-	// 3. Verify durability in PostgreSQL before carrier returns: attempts count must already be 1
+	// -------
+	// Verify durability in PostgreSQL before carrier returns: attempts count must already be 1
+	// -------
 	var dbAttempts int
 	err = pgRepo.Pool().QueryRow(ctx, "SELECT attempts FROM leads WHERE id = $1", lead.ID).Scan(&dbAttempts)
 	if err != nil {
@@ -1413,20 +1505,28 @@ func TestLivePostgresDurableAttemptStartPersistenceCrashSafety(t *testing.T) {
 		t.Fatalf("expected call_attempts status IN_PROGRESS, got %s", attemptStatus)
 	}
 
-	// 4. Simulate process crash during dial (carrier never returns, instance abruptly dies)
+	// -------
+	// Simulate process crash during dial (carrier never returns, instance abruptly dies)
+	// -------
+	// -------
 	// Backdate lock to simulate expired lease
+	// -------
 	_, err = pgRepo.Pool().Exec(ctx, "UPDATE leads SET locked_at = NOW() - INTERVAL '5 minutes' WHERE id = $1", lead.ID)
 	if err != nil {
 		t.Fatalf("failed backdating lock: %v", err)
 	}
 
-	// 5. Surviving worker instance reclaims expired lease
+	// -------
+	// Surviving worker instance reclaims expired lease
+	// -------
 	reclaimed, err := pgRepo.ReclaimExpiredLeases(ctx, camp.ID, 2*time.Minute)
 	if err != nil || reclaimed != 1 {
 		t.Fatalf("failed reclaiming expired lease: %v, reclaimed=%d", err, reclaimed)
 	}
 
-	// 6. Next worker claims lead: attempts must remain 1 (cannot be evaded by crashing)
+	// -------
+	// Next worker claims lead: attempts must remain 1 (cannot be evaded by crashing)
+	// -------
 	reclaimedLeads, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-2")
 	if err != nil || len(reclaimedLeads) != 1 {
 		t.Fatalf("failed claiming recovered lead: %v", err)
@@ -1499,12 +1599,16 @@ func TestAttemptStartFailureAbortsCarrierDial(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	engine.Stop()
 
+	// -------
 	// Carrier dial MUST NOT have been invoked because attempt-start failed!
+	// -------
 	if atomic.LoadInt32(&carrierDials) != 0 {
 		t.Fatalf("expected 0 carrier dials when attempt start persistence fails, got %d", carrierDials)
 	}
 
+	// -------
 	// Verify lead was safely rescheduled to QUEUED with attempts unchanged
+	// -------
 	active, _ := failRepo.GetActiveLeads(ctx, camp.ID)
 	if len(active) != 1 || active[0].Attempts != 0 {
 		t.Errorf("expected lead attempts to remain 0, got %d", active[0].Attempts)
@@ -1546,7 +1650,9 @@ func TestDNCFailClosedOnDatabaseError(t *testing.T) {
 		},
 	}
 
+	// -------
 	// Nil bloom filter forces engine to check repository
+	// -------
 	engine := queue.NewCampaignEngine(camp, nil, nil, recordingDialer)
 	engine.SetRepository(failRepo)
 
@@ -1554,7 +1660,9 @@ func TestDNCFailClosedOnDatabaseError(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	engine.Stop()
 
+	// -------
 	// Compliance requirement: when DNC status cannot be verified due to DB error, NEVER dial!
+	// -------
 	if atomic.LoadInt32(&carrierDials) != 0 {
 		t.Fatalf("expected 0 dials when DNC DB check fails (fail-closed violated!), got %d", carrierDials)
 	}
@@ -1591,14 +1699,18 @@ func TestTimezoneCurfewPersistentReschedule(t *testing.T) {
 		t.Fatalf("failed claiming lead: %v", err)
 	}
 
+	// -------
 	// Simulate curfew block reschedule via RescheduleLead with valid lease token
+	// -------
 	futureTime := time.Now().UTC().Add(8 * time.Hour)
 	err = repo.RescheduleLead(ctx, lead.ID, futureTime, claimed[0].LeaseToken)
 	if err != nil {
 		t.Fatalf("failed rescheduling lead: %v", err)
 	}
 
+	// -------
 	// Verify in database: status is QUEUED, lock cleared, attempts = 0
+	// -------
 	active, err := repo.GetActiveLeads(ctx, camp.ID)
 	if err != nil || len(active) != 1 {
 		t.Fatalf("expected 1 active lead, got %v", active)
@@ -1613,7 +1725,9 @@ func TestTimezoneCurfewPersistentReschedule(t *testing.T) {
 		t.Errorf("expected 0 attempts consumed by curfew holdoff, got %d", active[0].Attempts)
 	}
 
+	// -------
 	// Claiming again right now must return 0 leads because next_attempt_at is in the future
+	// -------
 	reclaimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "test-worker-2")
 	if err != nil {
 		t.Fatalf("claim failed: %v", err)
@@ -1646,7 +1760,9 @@ func TestAttemptCountingExactnessAndConsistency(t *testing.T) {
 	}
 	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
 
-	// 1. Claiming does NOT increment attempts
+	// -------
+	// Claiming does NOT increment attempts
+	// -------
 	claimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-1")
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("failed claiming: %v", err)
@@ -1655,7 +1771,9 @@ func TestAttemptCountingExactnessAndConsistency(t *testing.T) {
 		t.Errorf("expected 0 attempts on claim, got %d", claimed[0].Attempts)
 	}
 
-	// 2. Call attempt occurs (dial 1) -> busy -> retry 1 scheduled in the past to simulate elapsed backoff
+	// -------
+	// Call attempt occurs (dial 1) -> busy -> retry 1 scheduled in the past to simulate elapsed backoff
+	// -------
 	pastRetry := time.Now().UTC().Add(-10 * time.Millisecond)
 	err = repo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusQueued, "BUSY", &pastRetry, nil, 1, claimed[0].LeaseToken)
 	if err != nil {
@@ -1668,7 +1786,9 @@ func TestAttemptCountingExactnessAndConsistency(t *testing.T) {
 		t.Fatalf("expected DB attempts=1, got %v", active)
 	}
 
-	// 3. Dial 2 -> busy -> retry 2
+	// -------
+	// Dial 2 -> busy -> retry 2
+	// -------
 	claimed, _ = repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-1")
 	if len(claimed) != 1 || claimed[0].Attempts != 1 {
 		t.Fatalf("expected claim with attempts=1, got %v", claimed)
@@ -1678,7 +1798,9 @@ func TestAttemptCountingExactnessAndConsistency(t *testing.T) {
 		t.Fatalf("failed recording outcome 2: %v", err)
 	}
 
-	// 4. Dial 3 -> busy -> max attempts exhausted -> DLQ
+	// -------
+	// Dial 3 -> busy -> max attempts exhausted -> DLQ
+	// -------
 	claimed, _ = repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-1")
 	if len(claimed) != 1 || claimed[0].Attempts != 2 {
 		t.Fatalf("expected claim with attempts=2, got %v", claimed)
@@ -1708,7 +1830,9 @@ func TestDNCPersistenceAcrossRestart(t *testing.T) {
 		t.Fatalf("failed adding DNC numbers: %v", err)
 	}
 
+	// -------
 	// Simulate restart: load DNC numbers from storage into new Bloom filter
+	// -------
 	loaded, err := repo.GetDNCNumbers(ctx)
 	if err != nil {
 		t.Fatalf("failed loading DNC numbers: %v", err)
@@ -1736,13 +1860,17 @@ func TestRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 	ctx := context.Background()
 	memRepo := storage.NewMemoryPostgresRepository()
 
-	// 1. Missing lead must fail affected rows check
+	// -------
+	// Missing lead must fail affected rows check
+	// -------
 	err := memRepo.RecordAttemptStart(ctx, "non_existent_lead", uuid.NewString(), 1, "token-1")
 	if err == nil {
 		t.Fatalf("expected error when recording attempt start for non-existent lead, got nil")
 	}
 
-	// 2. Lead in QUEUED state (not DIALING) must fail
+	// -------
+	// Lead in QUEUED state (not DIALING) must fail
+	// -------
 	lead := &model.Lead{
 		ID:          "lead_queued_only",
 		CampaignID:  "camp_test",
@@ -1756,7 +1884,9 @@ func TestRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 		t.Fatalf("expected error when recording attempt start for lead not in DIALING state, got nil")
 	}
 
-	// 3. Lead transitioned to DIALING with matching lease token and active lease must succeed
+	// -------
+	// Lead transitioned to DIALING with matching lease token and active lease must succeed
+	// -------
 	lead.Status = model.StatusDialing
 	lead.LeaseToken = "token-valid"
 	nowLock := time.Now().UTC()
@@ -1782,13 +1912,17 @@ func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 	}
 	defer pgRepo.Close()
 
-	// 1. Missing lead: 0 rows affected -> must rollback and return error
+	// -------
+	// Missing lead: 0 rows affected -> must rollback and return error
+	// -------
 	err = pgRepo.RecordAttemptStart(ctx, "missing_lead_"+uuid.NewString()[:8], uuid.NewString(), 1, "token-1")
 	if err == nil {
 		t.Fatalf("expected error on live postgres for non-existent lead, got nil")
 	}
 
-	// 2. Ingest lead in QUEUED state without claiming: UPDATE affects 0 rows -> must fail
+	// -------
+	// Ingest lead in QUEUED state without claiming: UPDATE affects 0 rows -> must fail
+	// -------
 	camp := &model.Campaign{
 		ID:              "camp_affected_test_" + uuid.NewString()[:8],
 		AllocatedAgents: 1,
@@ -1811,13 +1945,17 @@ func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 		t.Fatalf("failed ingesting lead: %v", err)
 	}
 
+	// -------
 	// Attempt start without claiming (status is QUEUED, not DIALING) must fail
+	// -------
 	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, "token-1")
 	if err == nil {
 		t.Fatalf("expected error on live postgres when lead status is QUEUED (not DIALING), got nil")
 	}
 
-	// 3. Claim lead into DIALING state: now RecordAttemptStart must affect exactly 1 row and succeed
+	// -------
+	// Claim lead into DIALING state: now RecordAttemptStart must affect exactly 1 row and succeed
+	// -------
 	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-affected-1")
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("failed claiming lead: %v", err)
@@ -1830,12 +1968,24 @@ func TestLivePostgresRecordAttemptStartAffectedRowsValidation(t *testing.T) {
 }
 
 // TestLivePostgresDistributedLeaseFencingStaleWorkerRejected verifies distributed fencing token semantics:
-// 1. Worker A claims a lead, receiving leaseToken A.
-// 2. Lease expires (> 2 minutes) and Worker B reclaims the lead, receiving new distinct leaseToken B.
-// 3. Resumed stale Worker A calls RecordAttemptStart() with leaseToken A -> REJECTED (0 rows affected).
-// 4. Active Worker B calls RecordAttemptStart() with leaseToken B -> SUCCEEDS (1 row affected).
-// 5. Stale Worker A calls RecordCallOutcomeTx() with leaseToken A -> REJECTED.
-// 6. Active Worker B calls RecordCallOutcomeTx() with leaseToken B -> SUCCEEDS.
+// -------
+// Worker A claims a lead, receiving leaseToken A.
+// -------
+// -------
+// Lease expires (> 2 minutes) and Worker B reclaims the lead, receiving new distinct leaseToken B.
+// -------
+// -------
+// Resumed stale Worker A calls RecordAttemptStart() with leaseToken A -> REJECTED (0 rows affected).
+// -------
+// -------
+// Active Worker B calls RecordAttemptStart() with leaseToken B -> SUCCEEDS (1 row affected).
+// -------
+// -------
+// Stale Worker A calls RecordCallOutcomeTx() with leaseToken A -> REJECTED.
+// -------
+// -------
+// Active Worker B calls RecordCallOutcomeTx() with leaseToken B -> SUCCEEDS.
+// -------
 func TestLivePostgresDistributedLeaseFencingStaleWorkerRejected(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 
@@ -1868,7 +2018,9 @@ func TestLivePostgresDistributedLeaseFencingStaleWorkerRejected(t *testing.T) {
 		t.Fatalf("failed ingesting lead: %v", err)
 	}
 
-	// 1. Worker A claims lead
+	// -------
+	// Worker A claims lead
+	// -------
 	claimedA, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
 	if err != nil || len(claimedA) != 1 {
 		t.Fatalf("worker A failed claiming lead: %v", err)
@@ -1878,14 +2030,18 @@ func TestLivePostgresDistributedLeaseFencingStaleWorkerRejected(t *testing.T) {
 		t.Fatalf("expected non-empty leaseToken for claimed lead")
 	}
 
-	// 2. Simulate Worker A process pause/delay past 2-minute lease TTL
+	// -------
+	// Simulate Worker A process pause/delay past 2-minute lease TTL
+	// -------
 	_, err = pgRepo.Pool().Exec(ctx,
 		"UPDATE leads SET locked_at = NOW() - INTERVAL '3 minutes' WHERE id = $1", lead.ID)
 	if err != nil {
 		t.Fatalf("failed simulating expired lease: %v", err)
 	}
 
-	// 3. Worker B reclaims the expired lead
+	// -------
+	// Worker B reclaims the expired lead
+	// -------
 	claimedB, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-B")
 	if err != nil || len(claimedB) != 1 {
 		t.Fatalf("worker B failed reclaiming expired lead: %v", err)
@@ -1895,26 +2051,34 @@ func TestLivePostgresDistributedLeaseFencingStaleWorkerRejected(t *testing.T) {
 		t.Fatalf("expected Worker B to receive a new distinct leaseToken, got %s (A was %s)", leaseTokenB, leaseTokenA)
 	}
 
-	// 4. Stale Worker A resumes and calls RecordAttemptStart with stale leaseToken A -> MUST FAIL
+	// -------
+	// Stale Worker A resumes and calls RecordAttemptStart with stale leaseToken A -> MUST FAIL
+	// -------
 	err = pgRepo.RecordAttemptStart(ctx, lead.ID, uuid.NewString(), 1, leaseTokenA)
 	if err == nil {
 		t.Fatalf("expected stale Worker A attempt-start to fail due to lease token fencing, but got nil error")
 	}
 
-	// 5. Active Worker B calls RecordAttemptStart with valid leaseToken B -> MUST SUCCEED
+	// -------
+	// Active Worker B calls RecordAttemptStart with valid leaseToken B -> MUST SUCCEED
+	// -------
 	attemptIDB := uuid.NewString()
 	err = pgRepo.RecordAttemptStart(ctx, lead.ID, attemptIDB, 1, leaseTokenB)
 	if err != nil {
 		t.Fatalf("expected active Worker B attempt-start to succeed, got %v", err)
 	}
 
-	// 6. Stale Worker A attempts to record outcome with stale leaseToken A -> MUST FAIL
+	// -------
+	// Stale Worker A attempts to record outcome with stale leaseToken A -> MUST FAIL
+	// -------
 	err = pgRepo.RecordCallOutcomeTx(ctx, lead.ID, model.StatusConnected, "CONNECTED_STALE_A", nil, nil, 1, leaseTokenA)
 	if err == nil {
 		t.Fatalf("expected stale Worker A outcome persistence to fail due to lease token fencing, but got nil error")
 	}
 
-	// 7. Active Worker B records outcome with valid leaseToken B -> MUST SUCCEED
+	// -------
+	// Active Worker B records outcome with valid leaseToken B -> MUST SUCCEED
+	// -------
 	attemptB := &model.CallAttempt{
 		ID:             attemptIDB,
 		CampaignID:     camp.ID,
@@ -1930,7 +2094,9 @@ func TestLivePostgresDistributedLeaseFencingStaleWorkerRejected(t *testing.T) {
 		t.Fatalf("expected active Worker B outcome persistence to succeed, got %v", err)
 	}
 
-	// 8. Verify final disposition in PostgreSQL matches Worker B's outcome
+	// -------
+	// Verify final disposition in PostgreSQL matches Worker B's outcome
+	// -------
 	var finalStatus, finalReason string
 	err = pgRepo.Pool().QueryRow(ctx, "SELECT status, failure_reason FROM leads WHERE id = $1", lead.ID).Scan(&finalStatus, &finalReason)
 	if err != nil {
@@ -1965,7 +2131,9 @@ func TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
 	}
 	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
 
-	// 1. Worker A claims the lead
+	// -------
+	// Worker A claims the lead
+	// -------
 	claimedA, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
 	if err != nil || len(claimedA) != 1 {
 		t.Fatalf("worker A failed claiming lead: %v", err)
@@ -1976,14 +2144,18 @@ func TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
 		t.Fatalf("expected non-empty lease token for Worker A")
 	}
 
-	// 2. Simulate lease expiration in repository
+	// -------
+	// Simulate lease expiration in repository
+	// -------
 	time.Sleep(10 * time.Millisecond)
 	reclaimedCount, err := repo.ReclaimExpiredLeases(ctx, camp.ID, 1*time.Millisecond)
 	if err != nil || reclaimedCount != 1 {
 		t.Fatalf("failed reclaiming expired lease: %v, count=%d", err, reclaimedCount)
 	}
 
-	// 3. Worker B claims the reclaimed lead
+	// -------
+	// Worker B claims the reclaimed lead
+	// -------
 	claimedB, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-B")
 	if err != nil || len(claimedB) != 1 {
 		t.Fatalf("worker B failed claiming reclaimed lead: %v", err)
@@ -2004,15 +2176,21 @@ func TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
 	engineA := queue.NewCampaignEngine(camp, nil, nil, dialerA)
 	engineA.SetRepository(repo)
 
-	// 4. Stale Worker A dispatches leadA: attempt-start fails due to stale token, cleanup runs
+	// -------
+	// Stale Worker A dispatches leadA: attempt-start fails due to stale token, cleanup runs
+	// -------
 	engineA.DispatchLeadDirect(leadA)
 
+	// -------
 	// Carrier dial A must NEVER have been called
+	// -------
 	if atomic.LoadInt32(&carrierDialsA) != 0 {
 		t.Fatalf("stale Worker A must NOT initiate carrier dial, dialed %d times", carrierDialsA)
 	}
 
-	// 5. In repository: Worker B's lease MUST still be active and completely untouched!
+	// -------
+	// In repository: Worker B's lease MUST still be active and completely untouched!
+	// -------
 	activeLeads, err := repo.GetActiveLeads(ctx, camp.ID)
 	if err != nil || len(activeLeads) != 1 {
 		t.Fatalf("expected 1 active lead, got %v", activeLeads)
@@ -2027,7 +2205,9 @@ func TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
 		t.Fatalf("expected LeaseToken %s, got %s", leaseTokenB, activeLeads[0].LeaseToken)
 	}
 
-	// 6. Active Worker B dispatches leadB: attempt-start and outcome succeed
+	// -------
+	// Active Worker B dispatches leadB: attempt-start and outcome succeed
+	// -------
 	var carrierDialsB int32
 	dialerB := &callbackDialer{
 		dialFn: func(ctx context.Context, l *model.Lead) (model.CallStatus, time.Duration, error) {
@@ -2044,7 +2224,9 @@ func TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
 		t.Fatalf("active Worker B must initiate carrier dial, dialed %d times", carrierDialsB)
 	}
 
-	// 7. Verify final disposition is CONNECTED
+	// -------
+	// Verify final disposition is CONNECTED
+	// -------
 	finalLeads, _ := repo.GetActiveLeads(ctx, camp.ID)
 	if len(finalLeads) != 0 {
 		t.Fatalf("expected 0 active queued/dialing leads after completion, got %d", len(finalLeads))
@@ -2085,7 +2267,9 @@ func TestLivePostgresRescheduleLeadFencing(t *testing.T) {
 		t.Fatalf("failed ingesting lead: %v", err)
 	}
 
-	// 1. Claim lead -> receives valid leaseToken
+	// -------
+	// Claim lead -> receives valid leaseToken
+	// -------
 	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-resched-1")
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("failed claiming lead: %v", err)
@@ -2097,13 +2281,17 @@ func TestLivePostgresRescheduleLeadFencing(t *testing.T) {
 
 	futureRetry := time.Now().UTC().Add(10 * time.Minute)
 
-	// 2. Empty lease token must be rejected up front
+	// -------
+	// Empty lease token must be rejected up front
+	// -------
 	err = pgRepo.RescheduleLead(ctx, lead.ID, futureRetry, "")
 	if err == nil {
 		t.Fatalf("expected error when rescheduling with empty lease token, got nil")
 	}
 
-	// 3. Stale/invalid lease token must fail (0 rows affected)
+	// -------
+	// Stale/invalid lease token must fail (0 rows affected)
+	// -------
 	err = pgRepo.RescheduleLead(ctx, lead.ID, futureRetry, "stale_token_abc123")
 	if err == nil {
 		t.Fatalf("expected error when rescheduling with stale lease token, got nil")
@@ -2119,7 +2307,9 @@ func TestLivePostgresRescheduleLeadFencing(t *testing.T) {
 		t.Fatalf("lead state corrupted after rejected reschedule: status=%s, token=%s", curStatus, curToken)
 	}
 
-	// 4. Reschedule with valid lease token must succeed (1 row affected)
+	// -------
+	// Reschedule with valid lease token must succeed (1 row affected)
+	// -------
 	err = pgRepo.RescheduleLead(ctx, lead.ID, futureRetry, leaseToken)
 	if err != nil {
 		t.Fatalf("expected reschedule with valid lease token to succeed, got %v", err)
@@ -2139,15 +2329,29 @@ func TestLivePostgresRescheduleLeadFencing(t *testing.T) {
 
 // TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease tests the end-to-end
 // CampaignEngine queue error-recovery path against real PostgreSQL:
-// 1. Worker A claims lead via ClaimPendingLeads -> Token A.
-// 2. Database expires lease (locked_at set to 3 minutes ago).
-// 3. Worker B reclaims expired lead via ClaimPendingLeads -> Token B.
-// 4. Stale Worker A's engine dispatches lead with Token A:
+// -------
+// Worker A claims lead via ClaimPendingLeads -> Token A.
+// -------
+// -------
+// Database expires lease (locked_at set to 3 minutes ago).
+// -------
+// -------
+// Worker B reclaims expired lead via ClaimPendingLeads -> Token B.
+// -------
+// -------
+// Stale Worker A's engine dispatches lead with Token A:
+// -------
 //    - RecordAttemptStart fails due to lease token mismatch.
 //    - Worker A detects stale lease and abandons local lead WITHOUT calling RescheduleLead.
-// 5. In PostgreSQL: verify Worker B's lease is untouched (status DIALING, lease_token == Token B).
-// 6. Active Worker B's engine dispatches lead with Token B: attempt-start and outcome succeed.
-// 7. In PostgreSQL: verify final status is CONNECTED with 1 attempt.
+// -------
+// In PostgreSQL: verify Worker B's lease is untouched (status DIALING, lease_token == Token B).
+// -------
+// -------
+// Active Worker B's engine dispatches lead with Token B: attempt-start and outcome succeed.
+// -------
+// -------
+// In PostgreSQL: verify final status is CONNECTED with 1 attempt.
+// -------
 func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 
@@ -2180,7 +2384,9 @@ func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *
 		t.Fatalf("failed ingesting lead: %v", err)
 	}
 
-	// 1. Worker A claims lead -> Token A
+	// -------
+	// Worker A claims lead -> Token A
+	// -------
 	claimedA, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
 	if err != nil || len(claimedA) != 1 {
 		t.Fatalf("worker A failed claiming lead: %v", err)
@@ -2191,14 +2397,18 @@ func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *
 		t.Fatalf("expected non-empty leaseToken for Worker A")
 	}
 
-	// 2. Simulate lease expiration in PostgreSQL
+	// -------
+	// Simulate lease expiration in PostgreSQL
+	// -------
 	_, err = pgRepo.Pool().Exec(ctx,
 		"UPDATE leads SET locked_at = NOW() - INTERVAL '3 minutes' WHERE id = $1", lead.ID)
 	if err != nil {
 		t.Fatalf("failed simulating expired lease: %v", err)
 	}
 
-	// 3. Worker B reclaims expired lead -> Token B
+	// -------
+	// Worker B reclaims expired lead -> Token B
+	// -------
 	claimedB, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-B")
 	if err != nil || len(claimedB) != 1 {
 		t.Fatalf("worker B failed reclaiming lead: %v", err)
@@ -2219,14 +2429,18 @@ func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *
 	engineA := queue.NewCampaignEngine(camp, nil, nil, dialerA)
 	engineA.SetRepository(pgRepo)
 
-	// 4. Stale Worker A dispatches leadA: attempt-start rejected in PostgreSQL, cleanup runs
+	// -------
+	// Stale Worker A dispatches leadA: attempt-start rejected in PostgreSQL, cleanup runs
+	// -------
 	engineA.DispatchLeadDirect(leadA)
 
 	if atomic.LoadInt32(&carrierDialsA) != 0 {
 		t.Fatalf("stale Worker A must NOT initiate carrier dial, dialed %d times", carrierDialsA)
 	}
 
-	// 5. Query PostgreSQL directly: Worker B's lease MUST still be active and untouched!
+	// -------
+	// Query PostgreSQL directly: Worker B's lease MUST still be active and untouched!
+	// -------
 	var currentStatus, currentLockedBy, currentLeaseToken string
 	err = pgRepo.Pool().QueryRow(ctx,
 		"SELECT status, locked_by, lease_token FROM leads WHERE id = $1", lead.ID).
@@ -2244,7 +2458,9 @@ func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *
 		t.Fatalf("Stale Worker A corrupted lease_token to %s (expected '%s')!", currentLeaseToken, leaseTokenB)
 	}
 
-	// 6. Active Worker B dispatches leadB: attempt-start and outcome succeed
+	// -------
+	// Active Worker B dispatches leadB: attempt-start and outcome succeed
+	// -------
 	var carrierDialsB int32
 	dialerB := &callbackDialer{
 		dialFn: func(ctx context.Context, l *model.Lead) (model.CallStatus, time.Duration, error) {
@@ -2261,7 +2477,9 @@ func TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease(t *
 		t.Fatalf("active Worker B must initiate carrier dial, dialed %d times", carrierDialsB)
 	}
 
-	// 7. Verify final disposition in PostgreSQL is CONNECTED
+	// -------
+	// Verify final disposition in PostgreSQL is CONNECTED
+	// -------
 	var finalStatus string
 	var finalAttempts int
 	err = pgRepo.Pool().QueryRow(ctx,
@@ -2298,26 +2516,36 @@ func TestMemoryAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing.T) {
 	}
 	_, _, _ = repo.IngestLeadsIdempotent(ctx, []*model.Lead{lead})
 
-	// 1. Worker A claims the lead
+	// -------
+	// Worker A claims the lead
+	// -------
 	claimed, err := repo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("failed claiming lead: %v", err)
 	}
 	leaseTokenA := claimed[0].LeaseToken
 
-	// 2. Simulate Worker A process pause exceeding 2-minute lease TTL
+	// -------
+	// Simulate Worker A process pause exceeding 2-minute lease TTL
+	// -------
+	// -------
 	// In repository, backdate the lead's locked_at by 3 minutes
+	// -------
 	pastTime := time.Now().UTC().Add(-3 * time.Minute)
 	lead.LockedAt = &pastTime
 
-	// 3. Worker A resumes and calls RecordAttemptStart: MUST FAIL due to expired lease
+	// -------
+	// Worker A resumes and calls RecordAttemptStart: MUST FAIL due to expired lease
+	// -------
 	attemptID := uuid.NewString()
 	err = repo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, leaseTokenA)
 	if err == nil {
 		t.Fatalf("expected RecordAttemptStart to fail on expired lease before reclamation, got nil")
 	}
 
-	// 4. Refresh locked_at within lease window: RecordAttemptStart now succeeds and atomically refreshes locked_at
+	// -------
+	// Refresh locked_at within lease window: RecordAttemptStart now succeeds and atomically refreshes locked_at
+	// -------
 	now := time.Now().UTC()
 	lead.LockedAt = &now
 
@@ -2364,7 +2592,9 @@ func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing
 		t.Fatalf("failed ingesting lead: %v", err)
 	}
 
-	// 1. Worker A claims lead -> receives valid leaseToken
+	// -------
+	// Worker A claims lead -> receives valid leaseToken
+	// -------
 	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("failed claiming lead: %v", err)
@@ -2374,8 +2604,12 @@ func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing
 		t.Fatalf("expected non-empty lease token")
 	}
 
-	// 2. Simulate Worker A process pause exceeding 2 minutes:
+	// -------
+	// Simulate Worker A process pause exceeding 2 minutes:
+	// -------
+	// -------
 	// Backdate locked_at by 3 minutes in PostgreSQL, but DO NOT let Worker B reclaim the row!
+	// -------
 	_, err = pgRepo.Pool().Exec(ctx,
 		"UPDATE leads SET locked_at = NOW() - INTERVAL '3 minutes' WHERE id = $1", lead.ID)
 	if err != nil {
@@ -2394,15 +2628,21 @@ func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing
 		t.Fatalf("expected row to still hold Worker A's expired lease, got status=%s, token=%s, worker=%s", curStatus, curToken, curWorker)
 	}
 
-	// 3. Worker A resumes and calls RecordAttemptStart() with its leaseToken A:
+	// -------
+	// Worker A resumes and calls RecordAttemptStart() with its leaseToken A:
+	// -------
+	// -------
 	// MUST FAIL because locked_at is older than NOW() - INTERVAL '2 minutes'!
+	// -------
 	attemptID := uuid.NewString()
 	err = pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, leaseTokenA)
 	if err == nil {
 		t.Fatalf("expected RecordAttemptStart to fail on expired lease before reclamation, but got nil error")
 	}
 
-	// 4. Verify in PostgreSQL that attempt was NOT recorded and attempts counter was NOT incremented
+	// -------
+	// Verify in PostgreSQL that attempt was NOT recorded and attempts counter was NOT incremented
+	// -------
 	var dbAttempts int
 	err = pgRepo.Pool().QueryRow(ctx, "SELECT attempts FROM leads WHERE id = $1", lead.ID).Scan(&dbAttempts)
 	if err != nil {
@@ -2421,7 +2661,9 @@ func TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation(t *testing
 		t.Fatalf("expected 0 call attempts inserted for expired lease attempt-start, got %d", attemptCount)
 	}
 
-	// 5. Verify that once refreshed within lease window, attempt start succeeds:
+	// -------
+	// Verify that once refreshed within lease window, attempt start succeeds:
+	// -------
 	_, err = pgRepo.Pool().Exec(ctx, "UPDATE leads SET locked_at = NOW() WHERE id = $1", lead.ID)
 	if err != nil {
 		t.Fatalf("failed refreshing locked_at: %v", err)
@@ -2476,7 +2718,9 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 		t.Fatalf("failed ingesting lead: %v", err)
 	}
 
-	// 1. Worker A claims the lead and acquires a valid leaseToken
+	// -------
+	// Worker A claims the lead and acquires a valid leaseToken
+	// -------
 	claimed, err := pgRepo.ClaimPendingLeads(ctx, camp.ID, 1, "worker-node-A")
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("failed claiming lead: %v", err)
@@ -2486,14 +2730,18 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 		t.Fatalf("expected non-empty lease token")
 	}
 
-	// 2. Set locked_at to just before the 2-minute (120s) expiry: 119 seconds ago, and commit that change
+	// -------
+	// Set locked_at to just before the 2-minute (120s) expiry: 119 seconds ago, and commit that change
+	// -------
 	_, err = pgRepo.Pool().Exec(ctx,
 		"UPDATE leads SET locked_at = clock_timestamp() - INTERVAL '119 seconds' WHERE id = $1", lead.ID)
 	if err != nil {
 		t.Fatalf("failed setting locked_at near expiry: %v", err)
 	}
 
-	// 3. Tx 1 starts and acquires an exclusive row lock WITHOUT modifying the row
+	// -------
+	// Tx 1 starts and acquires an exclusive row lock WITHOUT modifying the row
+	// -------
 	tx1, err := pgRepo.Pool().Begin(ctx)
 	if err != nil {
 		t.Fatalf("failed to begin tx1: %v", err)
@@ -2506,16 +2754,22 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 		t.Fatalf("failed acquiring row lock in tx1: %v", err)
 	}
 
-	// 4. Worker A initiates RecordAttemptStart in a background goroutine.
+	// -------
+	// Worker A initiates RecordAttemptStart in a background goroutine.
+	// -------
+	// -------
 	// It begins its transaction and executes SELECT ... FOR UPDATE, which BLOCKS waiting on Tx 1's lock.
+	// -------
 	attemptID := uuid.NewString()
 	attemptStartDone := make(chan error, 1)
 	go func() {
 		attemptStartDone <- pgRepo.RecordAttemptStart(ctx, lead.ID, attemptID, 1, leaseTokenA)
 	}()
 
+	// -------
 	// Strictly prove that Worker A's query has reached PostgreSQL and is actively blocked in a lock wait
 	// by polling pg_stat_activity for wait_event_type = 'Lock'.
+	// -------
 	var waitingOnLock bool
 	pollDeadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(pollDeadline) {
@@ -2545,17 +2799,27 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 		t.Fatalf("timed out waiting for pg_stat_activity to report wait_event_type = 'Lock' for Worker A")
 	}
 
-	// 5. Wait until the 2-minute lease expires while Tx 1 continues holding the lock without modifying the row.
+	// -------
+	// Wait until the 2-minute lease expires while Tx 1 continues holding the lock without modifying the row.
+	// -------
+	// -------
 	// Since locked_at was set to 119s ago, sleeping 1500ms guarantees elapsed time > 120.5s (> DefaultLeaseTTL).
+	// -------
 	time.Sleep(1500 * time.Millisecond)
 
-	// 6. Tx 1 commits, releasing the lock without having made any modification to the row.
+	// -------
+	// Tx 1 commits, releasing the lock without having made any modification to the row.
+	// -------
+	// -------
 	// This ensures PostgreSQL does NOT trigger EvalPlanQual recheck.
+	// -------
 	if err := tx1.Commit(ctx); err != nil {
 		t.Fatalf("failed committing tx1: %v", err)
 	}
 
-	// 7. Worker A unblocks, acquires row lock, executes the conditional UPDATE with clock_timestamp(), and MUST FAIL
+	// -------
+	// Worker A unblocks, acquires row lock, executes the conditional UPDATE with clock_timestamp(), and MUST FAIL
+	// -------
 	select {
 	case startErr := <-attemptStartDone:
 		if startErr == nil {
@@ -2565,9 +2829,13 @@ func TestLivePostgresAttemptStartLockWaitExpiryRejection(t *testing.T) {
 		t.Fatalf("timed out waiting for RecordAttemptStart to finish after row lock released")
 	}
 
-	// 8. Verify in PostgreSQL that:
+	// -------
+	// Verify in PostgreSQL that:
+	// -------
+	// -------
 	// - lead attempts counter remains 0
 	// - no call_attempts row was inserted
+	// -------
 	var dbAttempts int
 	err = pgRepo.Pool().QueryRow(ctx, "SELECT attempts FROM leads WHERE id = $1", lead.ID).Scan(&dbAttempts)
 	if err != nil {
@@ -2606,9 +2874,11 @@ func TestTCPACurfewTableDriven(t *testing.T) {
 		expectErr   error
 		description string
 	}{
+		// -------
 		// Arizona non-DST tests (Mountain Standard Time UTC-7 year-round)
 		// At 2026-06-15 14:30:00Z: Denver (MDT, UTC-6) is 08:30 AM (allowed).
 		// Phoenix (MST, UTC-7) is 07:30 AM (dangerous / prohibited before 08:00 AM local).
+		// -------
 		{
 			name:        "Arizona 602 summer morning dangerous direction (07:30 Phoenix)",
 			phone:       "+1 (602) 555-0100",
@@ -2637,9 +2907,11 @@ func TestTCPACurfewTableDriven(t *testing.T) {
 			expectErr:   model.ErrTimezoneRestricted,
 			description: "Arizona 928 is 07:30 AM; prohibited before 08:00 AM",
 		},
+		// -------
 		// Arizona evening test
 		// At 2026-06-16 03:30:00Z: Denver (MDT, UTC-6) is 21:30 (9:30 PM, prohibited).
 		// Phoenix (MST, UTC-7) is 20:30 (8:30 PM, allowed before 21:00).
+		// -------
 		{
 			name:        "Arizona 602 summer evening allowed (20:30 Phoenix vs 21:30 Denver)",
 			phone:       "+1 (602) 555-0100",
@@ -2647,8 +2919,10 @@ func TestTCPACurfewTableDriven(t *testing.T) {
 			expectErr:   nil,
 			description: "Phoenix is 20:30 (8:30 PM, allowed), whereas Denver is 21:30 (prohibited)",
 		},
+		// -------
 		// Area code 928 covers both the Navajo Nation (observes DST) and Hopi / rural Arizona (non-DST).
 		// PredictiveDialer requires intersection: both zones must be within legal window.
+		// -------
 		{
 			name:        "Arizona 928 summer evening prohibited in Navajo Nation (21:30 Navajo vs 20:30 Phoenix)",
 			phone:       "+1 (928) 555-0100",
@@ -2670,7 +2944,9 @@ func TestTCPACurfewTableDriven(t *testing.T) {
 			expectErr:   nil,
 			description: "Both Navajo Nation (09:30) and Phoenix (08:30) are after 8 AM curfew; allowed",
 		},
+		// -------
 		// Unknown area codes fail-closed with ErrUnknownTimezone
+		// -------
 		{
 			name:        "Unknown area code 999 fails closed",
 			phone:       "+1 (999) 555-0100",
@@ -2685,7 +2961,9 @@ func TestTCPACurfewTableDriven(t *testing.T) {
 			expectErr:   model.ErrUnknownTimezone,
 			description: "Invalid area code must fail closed with ErrUnknownTimezone",
 		},
+		// -------
 		// 915 El Paso (Mountain Time approximation)
+		// -------
 		{
 			name:        "El Paso 915 morning allowed (08:30 MDT)",
 			phone:       "+1 (915) 555-0100",
@@ -2700,7 +2978,9 @@ func TestTCPACurfewTableDriven(t *testing.T) {
 			expectErr:   model.ErrTimezoneRestricted,
 			description: "El Paso 915 is Mountain Time; 13:30 UTC = 07:30 MDT (prohibited)",
 		},
+		// -------
 		// Exact DST transition boundary instants for Area Code 212 (New York, Eastern)
+		// -------
 		{
 			name:        "NY 212 standard time before spring forward (07:00 EST)",
 			phone:       "+1 (212) 555-0100",
@@ -2797,7 +3077,9 @@ func TestQueueHandlesUnknownAreaCodeDLQ(t *testing.T) {
 		t.Fatalf("expected lead %s to be present in engine DLQ", lead.ID)
 	}
 
+	// -------
 	// Lead must NOT have been rescheduled to a future NextAttemptAt or re-queued
+	// -------
 	if leadInfo.NextAttemptAt != nil {
 		t.Fatalf("expected lead NextAttemptAt to be nil (unserviceable), but got %v", *leadInfo.NextAttemptAt)
 	}
@@ -2894,7 +3176,9 @@ func TestLivePostgresConcurrentWorkersNeverClaimSameLead(t *testing.T) {
 		t.Fatalf("expected 0 QUEUED leads remaining in DB, found %d", queuedCount)
 	}
 
+	// -------
 	// Direct DB Verification 2: Each lead's locked_by in DB matches the exact claiming worker
+	// -------
 	rows, err := pgRepo.Pool().Query(ctx, "SELECT id, status, locked_by FROM leads WHERE campaign_id = $1", campID)
 	if err != nil {
 		t.Fatalf("failed querying lead statuses: %v", err)
@@ -2949,9 +3233,11 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 		t.Fatalf("failed saving campaign: %v", err)
 	}
 
+	// -------
 	// Subcase 1: Expired-not-reassigned:
 	// Worker A claims lead; locked_at is set into the past (>2m ago) without reassignment.
 	// RecordCallOutcomeTx must be rejected with sentinel model.ErrStaleLease and 0 call_attempts inserted.
+	// -------
 	t.Run("ExpiredNotReassigned", func(t *testing.T) {
 		leadID := "lead_fence_exp_" + uuid.NewString()[:8]
 		lead := &model.Lead{
@@ -2971,7 +3257,9 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 		}
 		claimedLead := claimed[0]
 
+		// -------
 		// Expire the lease in PostgreSQL by setting locked_at to 5 minutes ago WITHOUT altering lease_token
+		// -------
 		_, err = pgRepo.Pool().Exec(ctx, `
 			UPDATE leads
 			SET locked_at = clock_timestamp() - interval '5 minutes'
@@ -3012,9 +3300,11 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 		}
 	})
 
+	// -------
 	// Subcase 2: Reassigned to another worker:
 	// Worker A claims lead; lease expires and Worker B reclaims it (acquiring a new lease token).
 	// Worker A's outcome mutation with Token A must be rejected with sentinel model.ErrStaleLease.
+	// -------
 	t.Run("ReassignedToAnotherWorker", func(t *testing.T) {
 		leadID := "lead_fence_reassign_" + uuid.NewString()[:8]
 		lead := &model.Lead{
@@ -3044,7 +3334,9 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("failed updating locked_at to past: %v", err)
 		}
 
+		// -------
 		// Worker B claims the expired lead, acquiring a new lease token
+		// -------
 		claimedB, err := pgRepo.ClaimPendingLeads(ctx, campID, 1, "worker-B")
 		if err != nil || len(claimedB) != 1 {
 			t.Fatalf("worker B reclaim failed: %v", err)
@@ -3054,7 +3346,9 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("expected newly generated token for Worker B, got identical tokens")
 		}
 
+		// -------
 		// Worker A attempts outcome with stale Token A
+		// -------
 		attemptID := uuid.NewString()
 		attempt := &model.CallAttempt{
 			ID:             attemptID,
@@ -3084,12 +3378,14 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 		}
 	})
 
+	// -------
 	// Subcase 3: Lock-Wait Race:
 	// Demonstrates PostgreSQL Read Committed semantics on unmodified row locks:
 	// A single UPDATE checks its WHERE clause when it scans the row, before waiting for a row lock held by another transaction.
 	// If the blocker holds an exclusive lock (FOR UPDATE) without modifying the row and the lease expires during the wait,
 	// PostgreSQL does NOT re-check the WHERE clause upon unblocking!
 	// Our two-step pattern (SELECT ... FOR UPDATE then UPDATE with clock_timestamp()) guarantees the check happens AFTER the wait.
+	// -------
 	t.Run("LockWaitRace", func(t *testing.T) {
 		leadID := "lead_fence_lockwait_" + uuid.NewString()[:8]
 		lead := &model.Lead{
@@ -3109,7 +3405,9 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 		}
 		leadItem := claimed[0]
 
-		// 1. Set locked_at near the 2-minute (120s) expiry: 119 seconds ago, without changing lease_token
+		// -------
+		// Set locked_at near the 2-minute (120s) expiry: 119 seconds ago, without changing lease_token
+		// -------
 		_, err = pgRepo.Pool().Exec(ctx, `
 			UPDATE leads
 			SET locked_at = clock_timestamp() - interval '119 seconds'
@@ -3119,7 +3417,9 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("failed setting locked_at near expiry: %v", err)
 		}
 
-		// 2. Blocker transaction begins and acquires exclusive row lock on the lead WITHOUT modifying the row
+		// -------
+		// Blocker transaction begins and acquires exclusive row lock on the lead WITHOUT modifying the row
+		// -------
 		blockerTx, err := pgRepo.Pool().Begin(ctx)
 		if err != nil {
 			t.Fatalf("failed starting blocker tx: %v", err)
@@ -3132,7 +3432,9 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("blocker tx failed acquiring row lock: %v", err)
 		}
 
-		// 3. Worker A executes RecordCallOutcomeTx in a background goroutine, which blocks waiting for the row lock
+		// -------
+		// Worker A executes RecordCallOutcomeTx in a background goroutine, which blocks waiting for the row lock
+		// -------
 		attemptID := uuid.NewString()
 		attempt := &model.CallAttempt{
 			ID:             attemptID,
@@ -3149,7 +3451,9 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			outcomeDone <- err
 		}()
 
-		// 4. Verify via pg_stat_activity that Worker A is actively blocked waiting on the lock
+		// -------
+		// Verify via pg_stat_activity that Worker A is actively blocked waiting on the lock
+		// -------
 		waitingOnLock := false
 		for poll := 0; poll < 50; poll++ {
 			var waitEventType, waitEvent *string
@@ -3171,16 +3475,24 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("timed out waiting for pg_stat_activity to report wait_event_type = 'Lock' for Worker A")
 		}
 
-		// 5. BlockerTx holds the lock across the 2-minute lease boundary without modifying the row
+		// -------
+		// BlockerTx holds the lock across the 2-minute lease boundary without modifying the row
+		// -------
 		time.Sleep(1500 * time.Millisecond)
 
-		// 6. BlockerTx commits, releasing the lock WITHOUT having modified the row
+		// -------
+		// BlockerTx commits, releasing the lock WITHOUT having modified the row
+		// -------
 		if err := blockerTx.Commit(ctx); err != nil {
 			t.Fatalf("failed committing blocker tx: %v", err)
 		}
 
-		// 7. Worker A unblocks. Under single UPDATE, PostgreSQL does not re-check WHERE and succeeds (bug).
+		// -------
+		// Worker A unblocks. Under single UPDATE, PostgreSQL does not re-check WHERE and succeeds (bug).
+		// -------
+		// -------
 		// Under lock-then-check (SELECT FOR UPDATE then UPDATE), Worker A evaluates clock_timestamp() AFTER the wait, failing with ErrStaleLease.
+		// -------
 		select {
 		case outcomeErr := <-outcomeDone:
 			if outcomeErr == nil {
@@ -3193,7 +3505,9 @@ func TestLivePostgresStaleWorkerOutcomeRejection(t *testing.T) {
 			t.Fatalf("timed out waiting for Worker A RecordCallOutcomeTx to unblock after lock release")
 		}
 
-		// 8. Assert no call_attempts row was inserted
+		// -------
+		// Assert no call_attempts row was inserted
+		// -------
 		var attemptCount int
 		err = pgRepo.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM call_attempts WHERE id = $1", attemptID).Scan(&attemptCount)
 		if err != nil {

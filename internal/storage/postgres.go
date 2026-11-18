@@ -409,7 +409,9 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
-	// Step 1: Acquire exclusive row lock first and retrieve only raw fields
+	// -------
+	// Acquire exclusive row lock first and retrieve only raw fields
+	// -------
 	lockQuery := `
 		SELECT status, lease_token, locked_at
 		FROM leads
@@ -431,7 +433,9 @@ func (r *PostgresRepository) RescheduleLead(ctx context.Context, leadID string, 
 		return fmt.Errorf("%w: reschedule_lead: stale lease token or invalid lead state for %s, got 0 affected rows", model.ErrStaleLease, leadID)
 	}
 
-	// Step 2: Reschedule lead under exclusive lock, evaluating lease expiry dynamically via clock_timestamp() inside the UPDATE
+	// -------
+	// Reschedule lead under exclusive lock, evaluating lease expiry dynamically via clock_timestamp() inside the UPDATE
+	// -------
 	updateQuery := `
 		UPDATE leads
 		SET status = 'QUEUED',
@@ -557,7 +561,9 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
-	// Step 1: Acquire exclusive row lock first and retrieve only raw fields
+	// -------
+	// Acquire exclusive row lock first and retrieve only raw fields
+	// -------
 	lockQuery := `
 		SELECT status, lease_token, locked_at
 		FROM leads
@@ -579,7 +585,9 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		return fmt.Errorf("%w: record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got 0", model.ErrStaleLease, leadID)
 	}
 
-	// Step 2: Under the held row lock, execute conditional UPDATE evaluating clock_timestamp() at statement execution time
+	// -------
+	// Under the held row lock, execute conditional UPDATE evaluating clock_timestamp() at statement execution time
+	// -------
 	updateLeadQuery := `
 		UPDATE leads
 		SET attempts = $1,
@@ -598,7 +606,9 @@ func (r *PostgresRepository) RecordAttemptStart(ctx context.Context, leadID stri
 		return fmt.Errorf("%w: record_attempt_start: expected 1 row updated for lead %s in DIALING status with active lease, got %d", model.ErrStaleLease, leadID, tag1.RowsAffected())
 	}
 
-	// Step 3: Insert the IN_PROGRESS attempt record
+	// -------
+	// Insert the IN_PROGRESS attempt record
+	// -------
 	insertAttemptQuery := `
 		INSERT INTO call_attempts (
 			id, campaign_id, lead_id, phone_number, status, created_at
@@ -639,7 +649,9 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 			}
 			defer tx.Rollback(ctx)
 
-			// Step 1: Acquire exclusive row lock first and retrieve only raw fields
+			// -------
+			// Acquire exclusive row lock first and retrieve only raw fields
+			// -------
 			lockQuery := `
 				SELECT status, lease_token, locked_at
 				FROM leads
@@ -661,7 +673,9 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 				return fmt.Errorf("%w: record_call_outcome_tx: stale lease token or invalid lead state for %s, got 0 affected rows", model.ErrStaleLease, leadID)
 			}
 
-			// Step 2: Conditional UPDATE under the held row lock, evaluating clock_timestamp() at statement execution time
+			// -------
+			// Conditional UPDATE under the held row lock, evaluating clock_timestamp() at statement execution time
+			// -------
 			updateQuery := `
 				UPDATE leads
 				SET status = $1,
@@ -715,7 +729,9 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 					return fmt.Errorf("failed upserting call attempt in tx: %w", err)
 				}
 
+				// -------
 				// Transactional Outbox: Insert domain event in the exact same PostgreSQL transaction
+				// -------
 				eventID := model.DeterministicOutboxEventID(attempt.ID, "call.outcome_recorded")
 				payloadBytes, err := json.Marshal(map[string]interface{}{
 					"lead_id":     leadID,

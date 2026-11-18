@@ -48,7 +48,9 @@ func (s *ServerState) recoverCampaigns(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	for _, camp := range camps {
+		// -------
 		// Reclaim any orphaned leases from crashed previous instances
+		// -------
 		if reclaimed, err := s.repo.ReclaimExpiredLeases(ctx, camp.ID, model.DefaultLeaseTTL); err != nil {
 			logger.L.Error("failed_reclaiming_expired_leases_during_recovery", "campaign_id", camp.ID, "error", err)
 		} else if reclaimed > 0 {
@@ -74,7 +76,9 @@ func (s *ServerState) recoverCampaigns(ctx context.Context) error {
 			"leads_loaded", len(leads),
 		)
 
+		// -------
 		// Automatically resume execution for campaigns marked RUNNING
+		// -------
 		if camp.Status == model.CampaignRunning {
 			if err := engine.Start(); err != nil {
 				logger.L.Error("failed_resuming_campaign_on_startup", "campaign_id", camp.ID, "error", err)
@@ -94,7 +98,9 @@ func (s *ServerState) getOrHydrateCampaign(ctx context.Context, campaignID strin
 		return engine, nil
 	}
 
+	// -------
 	// Lazy recovery from storage if created by another instance or prior to server startup
+	// -------
 	camp, err := s.repo.GetCampaign(ctx, campaignID)
 	if err != nil {
 		return nil, err
@@ -130,7 +136,9 @@ func main() {
 	port := getEnv("PORT", "8086")
 	logger.L.Info("starting_predictive_dialer_engine", "port", port)
 
+	// -------
 	// Connect to PostgreSQL persistence layer if DATABASE_URL is configured
+	// -------
 	databaseURL := os.Getenv("DATABASE_URL")
 	var repo storage.CampaignRepository
 	if databaseURL != "" {
@@ -163,7 +171,9 @@ func main() {
 		})
 	}
 
+	// -------
 	// Initialize Transactional Outbox Relay if NATS_URL is configured
+	// -------
 	natsURL := os.Getenv("NATS_URL")
 	var relay *queue.OutboxRelay
 	if natsURL != "" {
@@ -186,7 +196,9 @@ func main() {
 		logger.L.Warn("NATS_URL_unset_outbox_relay_disabled")
 	}
 
+	// -------
 	// Recover and hydrate DNC persistent registry into Bloom filter (Fail-closed on DB read failure)
+	// -------
 	if repo != nil {
 		dncNumbers, err := repo.GetDNCNumbers(context.Background())
 		if err != nil {
@@ -199,7 +211,9 @@ func main() {
 		logger.L.Info("dnc_registry_hydrated_from_database", "count", len(dncNumbers))
 	}
 
+	// -------
 	// Recover existing active campaigns and leads from storage on startup
+	// -------
 	recoverCtx, cancelRecover := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := state.recoverCampaigns(recoverCtx); err != nil {
 		logger.L.Warn("campaign_recovery_partial_or_empty", "error", err)
@@ -208,7 +222,9 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// 1. Create Campaign
+	// -------
+	// Create Campaign
+	// -------
 	mux.HandleFunc("/v1/campaigns", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		if r.Method != http.MethodPost {
@@ -248,7 +264,9 @@ func main() {
 		_ = json.NewEncoder(w).Encode(req)
 	})
 
-	// 2. Ingest Leads & Campaign Control
+	// -------
+	// Ingest Leads & Campaign Control
+	// -------
 	mux.HandleFunc("/v1/campaigns/", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 5<<20) // 5MB batch ceiling
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -337,7 +355,9 @@ func main() {
 		}
 	})
 
-	// 3. Do-Not-Call (DNC) Registry Ingestion
+	// -------
+	// Do-Not-Call (DNC) Registry Ingestion
+	// -------
 	mux.HandleFunc("/v1/dnc", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		if r.Method != http.MethodPost {
@@ -372,7 +392,9 @@ func main() {
 		})
 	})
 
-	// 4. Telemetry & Health Checks
+	// -------
+	// Telemetry & Health Checks
+	// -------
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -382,7 +404,6 @@ func main() {
 	})
 	mux.HandleFunc("/metrics", metrics.DefaultMetrics.Handler())
 
-	// pprof
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 

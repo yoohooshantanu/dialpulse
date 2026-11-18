@@ -22,14 +22,18 @@ import (
 )
 
 const (
+	// -------
 	// LeaseTTL defines the maximum permissible time a worker holds a claimed lead in DIALING state.
 	// Expired leases (>2m) are eligible for reclamation and rejected by fenced mutations.
+	// -------
 	LeaseTTL = model.DefaultLeaseTTL
 
+	// -------
 	// TelephonyDialTimeout defines the strict bounded deadline for carrier trunk dialing.
 	// Because TelephonyDialTimeout (10s) is strictly bounded well within LeaseTTL (2m),
 	// an active dial completes before lease expiry. For streaming audio calls lasting >2m,
 	// background lease-heartbeat renewal should refresh locked_at every 30 seconds.
+	// -------
 	TelephonyDialTimeout = model.TelephonyDialTimeout
 )
 
@@ -155,7 +159,9 @@ func (e *CampaignEngine) IngestLeads(ctx context.Context, leads []*model.Lead) (
 			continue
 		}
 
+		// -------
 		// Idempotency check against in-memory index
+		// -------
 		if _, exists := e.phoneIndex[normPhone]; exists {
 			duplicates++
 			continue
@@ -182,7 +188,9 @@ func (e *CampaignEngine) IngestLeads(ctx context.Context, leads []*model.Lead) (
 		toInsert = append(toInsert, l)
 	}
 
+	// -------
 	// Persist to PostgreSQL synchronously first
+	// -------
 	admittedMap := normMap
 	if e.repo != nil && len(toInsert) > 0 {
 		insertedIDs, dbDups, err := e.repo.IngestLeadsIdempotent(ctx, toInsert)
@@ -192,10 +200,12 @@ func (e *CampaignEngine) IngestLeads(ctx context.Context, leads []*model.Lead) (
 		}
 		duplicates += dbDups
 
+		// -------
 		// Authoritative database admission list:
 		// Only admit leads whose IDs were actually inserted into PostgreSQL.
 		// If the application restarted and an existing duplicate was re-submitted,
 		// the database skips it and we DO NOT admit it into the in-memory dispatch queue.
+		// -------
 		admittedMap = make(map[string]*model.Lead)
 		insertedIDSet := make(map[string]bool, len(insertedIDs))
 		for _, id := range insertedIDs {
@@ -217,7 +227,9 @@ func (e *CampaignEngine) IngestLeads(ctx context.Context, leads []*model.Lead) (
 		accepted++
 	}
 
+	// -------
 	// Sort pending queue by priority descending (VIP leads first)
+	// -------
 	sort.SliceStable(e.pendingQueue, func(i, j int) bool {
 		return e.pendingQueue[i].Priority > e.pendingQueue[j].Priority
 	})
@@ -293,10 +305,14 @@ func (e *CampaignEngine) tick() {
 	active := int(atomic.LoadInt32(&e.activeCalls))
 	inFlight := int(atomic.LoadInt32(&e.inFlightDials))
 
+	// -------
 	// Ask predictive pacer for gross dials needed based on Little's Law / Erlang-C capacity model
+	// -------
 	grossDialsNeeded := e.pacer.CalculateDialsNeeded(idle, active)
 
+	// -------
 	// Deduct outstanding ringing calls to prevent dispatch burst over-subscription
+	// -------
 	netDialsNeeded := grossDialsNeeded - inFlight
 	if netDialsNeeded <= 0 {
 		e.mu.Unlock()
@@ -310,9 +326,13 @@ func (e *CampaignEngine) tick() {
 
 	var eligible []*model.Lead
 
-	// 1. Authoritative Distributed Path: When a persistent repository is configured,
+	// -------
+	// Authoritative Distributed Path: When a persistent repository is configured,
+	// -------
+	// -------
 	// dynamically claim pending leads directly from PostgreSQL via SELECT FOR UPDATE SKIP LOCKED.
 	// This coordinates seamlessly across multiple running server instances with zero collision or double dialing.
+	// -------
 	if repo != nil {
 		claimCtx, claimCancel := context.WithTimeout(e.ctx, 5*time.Second)
 		claimed, err := repo.ClaimPendingLeads(claimCtx, campaignID, netDialsNeeded, workerID)
@@ -325,7 +345,9 @@ func (e *CampaignEngine) tick() {
 			eligible = claimed
 		}
 	} else {
-		// 2. Pure in-memory standalone mode fallback (for isolated mock harness tests)
+		// -------
+		// Pure in-memory standalone mode fallback (for isolated mock harness tests)
+		// -------
 		e.mu.Lock()
 		now := time.Now().UTC()
 		var deferred []*model.Lead
@@ -392,7 +414,9 @@ func (e *CampaignEngine) HydrateLeads(leads []*model.Lead) {
 		e.phoneIndex[normPhone] = l.ID
 		e.leads[l.ID] = l
 
+		// -------
 		// If lead was DIALING from a crashed previous instance with expired lease, reclaim it for queue
+		// -------
 		if l.Status == model.StatusDialing {
 			if l.LockedAt == nil || now.Sub(*l.LockedAt) > 2*time.Minute {
 				l.Status = model.StatusQueued
@@ -439,7 +463,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	metrics.DefaultMetrics.IncActiveDialer()
 	defer metrics.DefaultMetrics.DecActiveDialer()
 
-	// 1. DNC Screening
+	// -------
+	// DNC Screening
+	// -------
 	isDNC := false
 	if e.dncFilter != nil && e.dncFilter.Contains(lead.PhoneNumber) {
 		isDNC = true
@@ -448,11 +474,15 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		prohibited, err := e.repo.IsDNCProhibited(dncCtx, lead.PhoneNumber)
 		dncCancel()
 		if err != nil {
+			// -------
 			// Fail-closed on database error: NEVER dial when DNC status cannot be verified!
+			// -------
 			metrics.DefaultMetrics.IncStorageErrors()
 			logger.L.Error("dnc_check_failed_deferring_lead_fail_closed", "lead_id", lead.ID, "phone", lead.PhoneNumber, "error", err)
 
+			// -------
 			// Defer lead with short backoff (e.g. 1 minute) to re-verify compliance later without burning an attempt
+			// -------
 			retryTime := time.Now().UTC().Add(1 * time.Minute)
 			e.mu.Lock()
 			lead.NextAttemptAt = &retryTime
@@ -462,7 +492,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
 
+			// -------
 			// Safely release row in PostgreSQL with bounded context and lease token fencing
+			// -------
 			reschedCtx, reschedCancel := context.WithTimeout(e.ctx, 2*time.Second)
 			if rErr := e.repo.RescheduleLead(reschedCtx, lead.ID, retryTime, lead.LeaseToken); rErr != nil {
 				logger.L.Error("failed_rescheduling_lead_after_dnc_error", "lead_id", lead.ID, "error", rErr)
@@ -511,11 +543,15 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		return
 	}
 
-	// 2. Timezone / Curfew Screening
+	// -------
+	// Timezone / Curfew Screening
+	// -------
 	if e.tzGovernor != nil {
 		if err := e.tzGovernor.CanCall(lead.PhoneNumber); err != nil {
 			if errors.Is(err, model.ErrUnknownTimezone) {
+				// -------
 				// Fail closed on unknown timezone: route directly to DLQ without infinite retry
+				// -------
 				metrics.DefaultMetrics.IncTimezoneBlock()
 				logger.L.Warn("dial_routed_to_dlq_unknown_timezone", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 
@@ -541,11 +577,15 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				return
 			}
 
+			// -------
 			// Curfew restriction: defer lead until next permissible morning window (08:00 AM local)
+			// -------
 			metrics.DefaultMetrics.IncTimezoneBlock()
 			logger.L.Debug("dial_blocked_curfew", "lead_id", lead.ID, "phone", lead.PhoneNumber)
 			nextPermissible := e.tzGovernor.NextPermissibleCallTime(lead.PhoneNumber)
+			// -------
 			// Return to queue for next valid window with backoff hold
+			// -------
 			e.mu.Lock()
 			lead.NextAttemptAt = &nextPermissible
 			lead.Status = model.StatusQueued
@@ -588,7 +628,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	currentAttempts := lead.Attempts
 	e.mu.Unlock()
 
+	// -------
 	// Durable attempt-start persistence: write attempt increment and in-progress record to DB before carrier dial with lease fencing
+	// -------
 	attemptID := uuid.NewString()
 	if e.repo != nil {
 		attemptCtx, attemptCancel := context.WithTimeout(e.ctx, 3*time.Second)
@@ -597,7 +639,6 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		if err != nil {
 			metrics.DefaultMetrics.IncStorageErrors()
 
-			// Check if failure is due to stale lease fencing (lease expired and claimed by another worker)
 			errStr := err.Error()
 			isStaleLease := strings.Contains(errStr, "lease token mismatch") ||
 				strings.Contains(errStr, "stale lease token") ||
@@ -609,13 +650,17 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				e.mu.Lock()
 				lead.Attempts--
 				e.mu.Unlock()
+				// -------
 				// Abort immediately: do NOT re-queue locally and do NOT mutate database row because another worker owns the lease!
+				// -------
 				return
 			}
 
 			logger.L.Error("failed_recording_attempt_start_aborting_dial", "lead_id", lead.ID, "attempt_id", attemptID, "error", err)
 
+			// -------
 			// Abort dial: revert in-memory attempt increment and reschedule safely
+			// -------
 			e.mu.Lock()
 			lead.Attempts--
 			retryTime := time.Now().UTC().Add(30 * time.Second)
@@ -626,7 +671,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			e.pendingQueue = append(e.pendingQueue, lead)
 			e.mu.Unlock()
 
+			// -------
 			// Safely release row lock in PostgreSQL with bounded context and lease token fencing
+			// -------
 			reschedCtx, reschedCancel := context.WithTimeout(e.ctx, 2*time.Second)
 			if rErr := e.repo.RescheduleLead(reschedCtx, lead.ID, retryTime, lead.LeaseToken); rErr != nil {
 				logger.L.Error("failed_rescheduling_lead_after_attempt_start_error", "lead_id", lead.ID, "error", rErr)
@@ -670,10 +717,14 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 		return
 	}
 
-	// 3. Retry with Exponential Backoff on Busy or No Answer if attempts remain
+	// -------
+	// Retry with Exponential Backoff on Busy or No Answer if attempts remain
+	// -------
 	if status == model.StatusBusy || status == model.StatusNoAnswer {
 		if lead.Attempts < lead.MaxAttempts {
+			// -------
 			// Exponential backoff: base 15m * 2^(attempts-1) with max 4h cap and 10% jitter
+			// -------
 			shift := lead.Attempts - 1
 			if shift > 5 {
 				shift = 5
@@ -706,7 +757,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 			return
 		}
 
+		// -------
 		// Attempts exhausted: route to Dead-Letter Queue
+		// -------
 		finalStatus = model.StatusDLQ
 		attemptErr = "EXHAUSTED_MAX_ATTEMPTS"
 		e.mu.Lock()
@@ -757,7 +810,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 	if status == model.StatusAnswered {
 		// Attempt to allocate idle AI agent slot
 		if atomic.AddInt32(&e.idleAgents, -1) >= 0 {
+			// -------
 			// Successfully connected: record CONNECTED as final disposition
+			// -------
 			finalStatus = model.StatusConnected
 			e.mu.Lock()
 			lead.Status = finalStatus
@@ -788,7 +843,9 @@ func (e *CampaignEngine) dispatchLead(lead *model.Lead) {
 				CreatedAt:      time.Now().UTC(),
 			}, currentAttempts, lead.LeaseToken)
 		} else {
+			// -------
 			// No agent was available when customer answered -> Abandoned Call!
+			// -------
 			atomic.AddInt32(&e.idleAgents, 1)
 			finalStatus = model.StatusAbandoned
 			attemptErr = "NO_AGENT_AVAILABLE"

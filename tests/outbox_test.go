@@ -53,7 +53,6 @@ func setupTestJetStream(t *testing.T, natsURL, streamName, subjectFilter string,
 		t.Fatalf("failed creating JetStream context: %v", err)
 	}
 
-	// Clean up existing stream if leftover
 	_ = js.DeleteStream(streamName)
 
 	streamCfg := &nats.StreamConfig{
@@ -108,7 +107,9 @@ func (f *FailingPublisher) PublishMsg(ctx context.Context, msg *nats.Msg) (*nats
 	return nil, errors.New("nats: connection refused (simulated unreachable broker)")
 }
 
-// 1. NATS Down: Outbox accumulates unpublished rows in Postgres, drains upon recovery
+// -------
+// NATS Down: Outbox accumulates unpublished rows in Postgres, drains upon recovery
+// -------
 func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	natsURL := getTestNATSURL(t)
@@ -120,13 +121,11 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	}
 	defer repo.Close()
 
-	// Clean outbox table for clean baseline
 	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events;`)
 
 	streamName := "STREAM_ACCUM_DRAIN_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
 	_, js := setupTestJetStream(t, natsURL, streamName, "predictive_dialer.events.accum.>", 2*time.Minute)
 
-	// Seed campaign and lead in DIALING status
 	campID := "camp_accum_" + uuid.New().String()[:8]
 	if err := repo.SaveCampaign(ctx, &model.Campaign{
 		ID: campID, Name: "Accum Drain Camp", Status: model.CampaignRunning,
@@ -153,7 +152,9 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 		t.Fatalf("failed record attempt start: %v", err)
 	}
 
+	// -------
 	// Record call outcome transaction (which MUST atomically insert into outbox_events)
+	// -------
 	attempt := &model.CallAttempt{
 		ID: attemptID, CampaignID: campID, LeadID: leadID, PhoneNumber: phone,
 		Status: model.StatusConnected, RingDurationMs: 300, TalkDurationMs: 1200,
@@ -162,7 +163,9 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 		t.Fatalf("record call outcome failed: %v", err)
 	}
 
+	// -------
 	// Verify outbox row exists with published_at IS NULL
+	// -------
 	expectedID := model.DeterministicOutboxEventID(attemptID, "call.outcome_recorded")
 	var targetEvent model.OutboxEvent
 	var targetPayload []byte
@@ -186,7 +189,9 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 		t.Fatalf("expected non-negative outbox lag, got %f", lag)
 	}
 
+	// -------
 	// Run relay with FAILING publisher (simulating NATS down)
+	// -------
 	failingRelay := queue.NewOutboxRelay(repo.Pool(), &FailingPublisher{}, queue.OutboxRelayConfig{
 		BatchSize:     5,
 		SubjectPrefix: "predictive_dialer.events.accum",
@@ -203,7 +208,9 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 		t.Fatalf("expected outbox event %s to remain unpublished after simulated NATS failure, got %v", expectedID, stillPublishedAt)
 	}
 
+	// -------
 	// Now connect relay with LIVE JetStream publisher (simulating NATS recovery)
+	// -------
 	liveRelay := queue.NewOutboxRelay(repo.Pool(), queue.NewNATSJetStreamPublisher(js), queue.OutboxRelayConfig{
 		BatchSize:     10,
 		SubjectPrefix: "predictive_dialer.events.accum",
@@ -227,7 +234,9 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	}
 }
 
-// 2. Crash between publish and mark: At-least-once delivery, idempotent effect (PubAck.Duplicate == true, stream count == 1)
+// -------
+// Crash between publish and mark: At-least-once delivery, idempotent effect (PubAck.Duplicate == true, stream count == 1)
+// -------
 func TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	natsURL := getTestNATSURL(t)
@@ -255,7 +264,6 @@ func TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect(t *testin
 	msg1.Header.Set("x-aggregate-type", "lead")
 	msg1.Data = payloadBytes
 
-	// First publish succeeds
 	ack1, err := js.PublishMsg(msg1)
 	if err != nil {
 		t.Fatalf("first publish failed: %v", err)
@@ -264,8 +272,10 @@ func TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect(t *testin
 		t.Fatalf("expected first publish Duplicate=false, got true")
 	}
 
+	// -------
 	// Simulate crash: relay crashed before updating published_at.
 	// Relay restarts and attempts republishing the same message with same Nats-Msg-Id within dedup window
+	// -------
 	msg2 := nats.NewMsg(subject)
 	msg2.Header.Set("Nats-Msg-Id", eventID)
 	msg2.Header.Set("x-aggregate-type", "lead")
@@ -275,12 +285,13 @@ func TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect(t *testin
 	if err != nil {
 		t.Fatalf("republish failed: %v", err)
 	}
+	// -------
 	// JetStream deduplication MUST flag this as duplicate
+	// -------
 	if !ack2.Duplicate {
 		t.Fatalf("expected JetStream PubAck.Duplicate == true on re-publish within window, got false")
 	}
 
-	// Verify stream message count is 1
 	info, err := js.StreamInfo(streamName)
 	if err != nil {
 		t.Fatalf("failed getting stream info: %v", err)
@@ -289,23 +300,25 @@ func TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect(t *testin
 		t.Fatalf("expected stream message count to be 1, got %d", info.State.Msgs)
 	}
 
+	// -------
 	// Verify consumer processes message and executes DB effect idempotently
+	// -------
 	consumer := queue.NewOutboxConsumer(repo.Pool(), js, queue.NewCampaignOutcomeAggregator(), queue.OutboxConsumerConfig{
 		ConsumerName: "consumer_crash_test",
 		StreamName:   streamName,
 	})
 
-	// Process message first time
 	if err := consumer.ProcessMessage(ctx, msg1); err != nil {
 		t.Fatalf("consumer first process failed: %v", err)
 	}
 
-	// Process simulated redelivery of duplicate message
 	if err := consumer.ProcessMessage(ctx, msg2); err != nil {
 		t.Fatalf("consumer duplicate process failed: %v", err)
 	}
 
+	// -------
 	// Assert business outcome counter equals 1 (idempotent effect)
+	// -------
 	count, err := repo.GetCampaignOutcomeCount(ctx, campID, "ANSWERED")
 	if err != nil {
 		t.Fatalf("failed getting outcome count: %v", err)
@@ -315,7 +328,9 @@ func TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect(t *testin
 	}
 }
 
-// 3. Short deduplication window expiration: Stream accepts duplicate, consumer DB idempotency preserves single effect
+// -------
+// Short deduplication window expiration: Stream accepts duplicate, consumer DB idempotency preserves single effect
+// -------
 func TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	natsURL := getTestNATSURL(t)
@@ -327,7 +342,9 @@ func TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect(t *test
 	}
 	defer repo.Close()
 
+	// -------
 	// Short deduplication window of 1 second
+	// -------
 	streamName := "STREAM_DEDUP_EXPIRE_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
 	_, js := setupTestJetStream(t, natsURL, streamName, "predictive_dialer.events.window.>", 1*time.Second)
 
@@ -352,10 +369,14 @@ func TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect(t *test
 		t.Fatalf("expected first publish to not be duplicate")
 	}
 
+	// -------
 	// Sleep 1.2s to exceed the 1s deduplication window
+	// -------
 	time.Sleep(1200 * time.Millisecond)
 
+	// -------
 	// Republish with identical Nats-Msg-Id after window expiry
+	// -------
 	msg2 := nats.NewMsg(subject)
 	msg2.Header.Set("Nats-Msg-Id", eventID)
 	msg2.Header.Set("x-aggregate-type", "lead")
@@ -366,12 +387,16 @@ func TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect(t *test
 		t.Fatalf("second publish failed: %v", err)
 	}
 
+	// -------
 	// JetStream deduplication window expired, so stream MUST accept it as a new message!
+	// -------
 	if ack2.Duplicate {
 		t.Fatalf("expected PubAck.Duplicate == false after dedup window expired, got true")
 	}
 
+	// -------
 	// Stream message count is now 2
+	// -------
 	info, err := js.StreamInfo(streamName)
 	if err != nil {
 		t.Fatalf("failed getting stream info: %v", err)
@@ -380,8 +405,10 @@ func TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect(t *test
 		t.Fatalf("expected stream message count == 2 after dedup window expiry, got %d", info.State.Msgs)
 	}
 
+	// -------
 	// Downstream consumer receives both messages:
 	// In the absence of consumer-level DB idempotency, this would cause double-counting!
+	// -------
 	consumer := queue.NewOutboxConsumer(repo.Pool(), js, queue.NewCampaignOutcomeAggregator(), queue.OutboxConsumerConfig{
 		ConsumerName: "consumer_window_test",
 		StreamName:   streamName,
@@ -394,7 +421,9 @@ func TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect(t *test
 		t.Fatalf("consumer failed processing msg2: %v", err)
 	}
 
+	// -------
 	// Assert business counter is EXACTLY 1 because processed_events blocked the duplicate!
+	// -------
 	count, err := repo.GetCampaignOutcomeCount(ctx, campID, "CONNECTED")
 	if err != nil {
 		t.Fatalf("failed getting outcome count: %v", err)
@@ -411,7 +440,9 @@ func (h *FailingHandler) HandleEventTx(ctx context.Context, tx pgx.Tx, event *mo
 	return errors.New("unrecoverable business processing failure: poison payload")
 }
 
-// 4. Poison message reaches DLQ subject after N deliveries
+// -------
+// Poison message reaches DLQ subject after N deliveries
+// -------
 func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	natsURL := getTestNATSURL(t)
@@ -426,7 +457,9 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 	streamName := "STREAM_POISON_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
 	nc, js := setupTestJetStream(t, natsURL, streamName, "predictive_dialer.events.poison.>", 2*time.Minute)
 
+	// -------
 	// Subscribe to DLQ subject to observe arrival
+	// -------
 	dlqSubject := "predictive_dialer.dlq.lead"
 	dlqSub, err := nc.SubscribeSync(dlqSubject)
 	if err != nil {
@@ -454,13 +487,17 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 		BaseBackoff:      5 * time.Millisecond,
 	})
 
+	// -------
 	// Create durable pull subscription to receive redeliveries
+	// -------
 	sub, err := js.PullSubscribe("predictive_dialer.events.poison.>", "poison_durable", nats.MaxDeliver(3))
 	if err != nil {
 		t.Fatalf("pull subscribe failed: %v", err)
 	}
 
+	// -------
 	// Fetch message and process through consumer until MaxDeliveries is reached
+	// -------
 	for i := 1; i <= 3; i++ {
 		msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
 		if err != nil {
@@ -471,11 +508,15 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 		}
 		m := msgs[0]
 		_ = consumer.ProcessMessage(ctx, m)
+		// -------
 		// Small sleep to ensure NakWithDelay has elapsed before next fetch
+		// -------
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	// -------
 	// Message should now be received on the DLQ subject
+	// -------
 	dlqMsg, err := dlqSub.NextMsg(3 * time.Second)
 	if err != nil {
 		t.Fatalf("expected poison message to arrive on DLQ %s, got: %v", dlqSubject, err)
@@ -488,7 +529,9 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 	}
 }
 
-// 5. Consumer at-least-once delivery ignores duplicate event ID
+// -------
+// Consumer at-least-once delivery ignores duplicate event ID
+// -------
 func TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	natsURL := getTestNATSURL(t)
@@ -526,11 +569,9 @@ func TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID(t *testing.T) {
 	msg2.Header.Set("x-aggregate-type", "lead")
 	msg2.Data = payloadBytes
 
-	// Process message 1
 	if err := consumer.ProcessMessage(ctx, msg1); err != nil {
 		t.Fatalf("processing msg1 failed: %v", err)
 	}
-	// Process message 2 (identical eventID)
 	if err := consumer.ProcessMessage(ctx, msg2); err != nil {
 		t.Fatalf("processing msg2 failed: %v", err)
 	}
@@ -544,7 +585,9 @@ func TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID(t *testing.T) {
 	}
 }
 
-// 6. Two relays never publish the same row twice concurrently (wrapping publisher with counter; assert exactly 20 publish attempts and each row claimed once)
+// -------
+// Two relays never publish the same row twice concurrently (wrapping publisher with counter; assert exactly 20 publish attempts and each row claimed once)
+// -------
 func TestConcurrentRelaysSkipLockedNoDuplicatePublish(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	ctx := context.Background()
@@ -555,13 +598,16 @@ func TestConcurrentRelaysSkipLockedNoDuplicatePublish(t *testing.T) {
 	}
 	defer repo.Close()
 
+	// -------
 	// Ensure clean baseline for concurrency test
+	// -------
 	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events WHERE published_at IS NULL;`)
 
+	// -------
 	// Wrap publisher with atomic counter to record raw publish calls without relying on JetStream dedup
+	// -------
 	sharedPublisher := NewCountingPublisher(nil)
 
-	// Seed 20 outbox records directly into PostgreSQL
 	totalRows := 20
 	eventIDs := make([]string, totalRows)
 	for i := 0; i < totalRows; i++ {
@@ -606,13 +652,17 @@ func TestConcurrentRelaysSkipLockedNoDuplicatePublish(t *testing.T) {
 	go runRelay(relay2)
 	wg.Wait()
 
+	// -------
 	// Assert: Total publisher invocations across both relays must equal EXACTLY 20
+	// -------
 	actualCalls := atomic.LoadInt64(&sharedPublisher.totalCalls)
 	if actualCalls != int64(totalRows) {
 		t.Fatalf("expected exactly %d publish attempts across competing relays, got %d", totalRows, actualCalls)
 	}
 
+	// -------
 	// Assert: Each seeded row was published EXACTLY once
+	// -------
 	for _, id := range eventIDs {
 		val, ok := sharedPublisher.attemptsByID.Load(id)
 		if !ok {
@@ -635,7 +685,9 @@ func TestConcurrentRelaysSkipLockedNoDuplicatePublish(t *testing.T) {
 	}
 }
 
-// 7. Metric predictive_dialer_outbox_lag_seconds keeps growing when relay is stopped
+// -------
+// Metric predictive_dialer_outbox_lag_seconds keeps growing when relay is stopped
+// -------
 func TestOutboxLagMetricKeepsGrowingWhenRelayStopped(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	ctx := context.Background()
@@ -646,10 +698,14 @@ func TestOutboxLagMetricKeepsGrowingWhenRelayStopped(t *testing.T) {
 	}
 	defer repo.Close()
 
+	// -------
 	// Ensure clean baseline for outbox lag test
+	// -------
 	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events WHERE published_at IS NULL;`)
 
+	// -------
 	// Insert an outbox row with created_at set to 10 seconds in the past
+	// -------
 	eventID := "evt_lag_" + uuid.New().String()
 	insertQuery := `
 		INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
@@ -733,7 +789,9 @@ func (b *BlockingPublisher) PublishMsg(ctx context.Context, msg *nats.Msg) (*nat
 	}
 }
 
-// 8. Competing relays do not block each other: Relay A blocks holding its batch tx; Relay B skips locked rows and completes its batch within ~1s
+// -------
+// Competing relays do not block each other: Relay A blocks holding its batch tx; Relay B skips locked rows and completes its batch within ~1s
+// -------
 func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	ctx := context.Background()
@@ -744,10 +802,8 @@ func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
 	}
 	defer repo.Close()
 
-	// Clean outbox slate
 	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events WHERE published_at IS NULL;`)
 
-	// Seed 20 outbox records
 	totalRows := 20
 	eventIDs := make([]string, totalRows)
 	for i := 0; i < totalRows; i++ {
@@ -779,7 +835,9 @@ func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
 	relayAStarted := make(chan struct{})
 	relayADone := make(chan error, 1)
 
+	// -------
 	// Launch Relay A: it will claim the first 10 rows and block inside PublishMsg
+	// -------
 	go func() {
 		close(relayAStarted)
 		_, err := relayA.ProcessBatch(ctx)
@@ -787,16 +845,20 @@ func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
 	}()
 
 	<-relayAStarted
+	// -------
 	// Wait until Relay A has actually entered PublishMsg (holding the row locks on batch 1)
+	// -------
 	select {
 	case <-blockingPub.enteredCh:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timeout waiting for Relay A to enter blocking publisher")
 	}
 
+	// -------
 	// Now execute Relay B with a strict 1.5s deadline.
 	// Because of SKIP LOCKED, Relay B MUST skip Relay A's locked rows and complete batch 2 immediately (<1s).
 	// If SKIP LOCKED is removed, Relay B will block on Relay A's row lock and fail with context deadline exceeded.
+	// -------
 	relayBCtx, cancelB := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancelB()
 
@@ -824,7 +886,9 @@ func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
 		t.Fatalf("expected 10 rows published by Relay B while Relay A was blocked, got %d", publishedCount)
 	}
 
+	// -------
 	// Now unblock Relay A to complete cleanly
+	// -------
 	close(blockingPub.blockCh)
 	select {
 	case errA := <-relayADone:
@@ -846,7 +910,9 @@ func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
 	}
 }
 
-// 9. PurgePublishedOutboxEvents respects olderThan, limit, and never deletes unpublished rows
+// -------
+// PurgePublishedOutboxEvents respects olderThan, limit, and never deletes unpublished rows
+// -------
 func TestPurgePublishedOutboxEvents(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	ctx := context.Background()
@@ -857,7 +923,6 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 	}
 	defer repo.Close()
 
-	// Clean baseline
 	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events;`)
 
 	idOldPublished1 := "evt_purge_old1_" + uuid.New().String()[:8]
@@ -865,7 +930,9 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 	idRecentPublished := "evt_purge_recent_" + uuid.New().String()[:8]
 	idOldUnpublished := "evt_purge_unpub_" + uuid.New().String()[:8]
 
-	// 1. Two old published rows (published 2 hours ago)
+	// -------
+	// Two old published rows (published 2 hours ago)
+	// -------
 	queryOldPublished := `
 		INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at)
 		VALUES ($1, 'lead', 'l1', 'e1', '{"test":1}', clock_timestamp() - interval '2 hours', clock_timestamp() - interval '2 hours');`
@@ -876,7 +943,9 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 		t.Fatalf("failed inserting old published 2: %v", err)
 	}
 
-	// 2. One recently published row (published 10 seconds ago)
+	// -------
+	// One recently published row (published 10 seconds ago)
+	// -------
 	queryRecentPublished := `
 		INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at)
 		VALUES ($1, 'lead', 'l2', 'e2', '{"test":2}', clock_timestamp() - interval '1 minute', clock_timestamp() - interval '10 seconds');`
@@ -884,7 +953,9 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 		t.Fatalf("failed inserting recent published: %v", err)
 	}
 
-	// 3. One old UNPUBLISHED row (created 3 hours ago, published_at IS NULL)
+	// -------
+	// One old UNPUBLISHED row (created 3 hours ago, published_at IS NULL)
+	// -------
 	queryOldUnpublished := `
 		INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at)
 		VALUES ($1, 'lead', 'l3', 'e3', '{"test":3}', clock_timestamp() - interval '3 hours', NULL);`
@@ -892,7 +963,9 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 		t.Fatalf("failed inserting old unpublished: %v", err)
 	}
 
+	// -------
 	// Step A: Purge with olderThan=1 hour, limit=1. Must delete exactly 1 old published row (respecting limit)
+	// -------
 	purged1, err := repo.PurgePublishedOutboxEvents(ctx, 1*time.Hour, 1)
 	if err != nil {
 		t.Fatalf("purge 1 failed: %v", err)
@@ -901,7 +974,9 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 		t.Fatalf("expected exactly 1 row purged with limit=1, got %d", purged1)
 	}
 
+	// -------
 	// Step B: Purge with olderThan=1 hour, limit=10. Must delete the remaining 1 old published row
+	// -------
 	purged2, err := repo.PurgePublishedOutboxEvents(ctx, 1*time.Hour, 10)
 	if err != nil {
 		t.Fatalf("purge 2 failed: %v", err)
@@ -910,7 +985,9 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 		t.Fatalf("expected 1 remaining old published row purged, got %d", purged2)
 	}
 
+	// -------
 	// Step C: Purge again with olderThan=1 hour. No more rows should match
+	// -------
 	purged3, err := repo.PurgePublishedOutboxEvents(ctx, 1*time.Hour, 10)
 	if err != nil {
 		t.Fatalf("purge 3 failed: %v", err)
@@ -934,7 +1011,9 @@ func TestPurgePublishedOutboxEvents(t *testing.T) {
 	}
 }
 
-// 10. DLQ publish fails on 3rd delivery -> message is redelivered and lands in DLQ once available
+// -------
+// DLQ publish fails on 3rd delivery -> message is redelivered and lands in DLQ once available
+// -------
 func TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	natsURL := getTestNATSURL(t)
@@ -976,8 +1055,10 @@ func TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ(t *testing.T) {
 		BaseBackoff:      5 * time.Millisecond,
 	})
 
+	// -------
 	// JetStream consumer configured with MaxDeliver(-1) (unlimited) so the application
 	// enforces delivery thresholds and can retry routing to DLQ upon broker errors.
+	// -------
 	sub, err := js.PullSubscribe(subjectPrefix+".>", "dlq_retry_durable", nats.MaxDeliver(-1))
 	if err != nil {
 		t.Fatalf("pull subscribe failed: %v", err)
@@ -1003,7 +1084,9 @@ func TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ(t *testing.T) {
 	}
 	time.Sleep(20 * time.Millisecond)
 
+	// -------
 	// Delivery 3: handler fails; poison routing to DLQ is attempted, but DLQ publisher FAILS
+	// -------
 	consumer.SetDLQPublisherForTest(func(m *nats.Msg) (*nats.PubAck, error) {
 		return nil, errors.New("simulated DLQ publisher outage")
 	})
@@ -1021,8 +1104,10 @@ func TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ(t *testing.T) {
 	// DLQ publisher recovers
 	consumer.SetDLQPublisherForTest(nil)
 
+	// -------
 	// Delivery 4: message is redelivered (not dropped because MaxDeliver is unlimited)!
 	// DLQ publish now succeeds and message is acknowledged.
+	// -------
 	msgs4, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
 	if err != nil || len(msgs4) == 0 {
 		t.Fatalf("fetch 4 failed: expected redelivery after DLQ failure: %v", err)
@@ -1043,14 +1128,15 @@ func TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ(t *testing.T) {
 		t.Fatalf("expected DLQ delivery count == 4, got %s", dlqMsg.Header.Get("x-delivery-count"))
 	}
 
-	// Verify stream is now empty (message ACK'd, not retried further)
 	extraMsgs, _ := sub.Fetch(1, nats.MaxWait(300*time.Millisecond))
 	if len(extraMsgs) > 0 {
 		t.Fatalf("expected message to be acknowledged and terminated, but received extra redelivery")
 	}
 }
 
-// 11. Malformed messages (missing Nats-Msg-Id): publish to the DLQ with reason header and terminate without retry
+// -------
+// Malformed messages (missing Nats-Msg-Id): publish to the DLQ with reason header and terminate without retry
+// -------
 func TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	natsURL := getTestNATSURL(t)
@@ -1073,7 +1159,9 @@ func TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry(t *testing.T) {
 	}
 	defer dlqSub.Unsubscribe()
 
+	// -------
 	// Publish message WITHOUT Nats-Msg-Id header
+	// -------
 	subject := subjectPrefix + ".malformed.item"
 	rawPayload := []byte(`{"raw":"corrupt_payload_missing_id"}`)
 	msg := nats.NewMsg(subject)
@@ -1102,7 +1190,9 @@ func TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry(t *testing.T) {
 		t.Fatalf("failed fetching malformed message: %v", err)
 	}
 
+	// -------
 	// ProcessMessage should identify missing Nats-Msg-Id, route immediately to DLQ with ID from sequence, and terminate (Ack)
+	// -------
 	if err := consumer.ProcessMessage(ctx, msgs[0]); err != nil {
 		t.Fatalf("expected ProcessMessage to successfully handle and route malformed message, got: %v", err)
 	}
@@ -1123,7 +1213,9 @@ func TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry(t *testing.T) {
 		t.Fatalf("expected DLQ payload to preserve original data, got %s", string(dlqMsg.Data))
 	}
 
+	// -------
 	// Verify original message is acknowledged and NOT retried
+	// -------
 	extraMsgs, _ := sub.Fetch(1, nats.MaxWait(300*time.Millisecond))
 	if len(extraMsgs) > 0 {
 		t.Fatalf("expected malformed message to terminate without retry, but received another message")

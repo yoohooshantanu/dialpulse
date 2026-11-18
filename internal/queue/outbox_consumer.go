@@ -159,7 +159,9 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 
 	eventID := msg.Header.Get("Nats-Msg-Id")
 	if eventID == "" {
+		// -------
 		// Malformed message missing Nats-Msg-Id: route to DLQ with ID derived from stream sequence and terminate without retry
+		// -------
 		aggType := msg.Header.Get("x-aggregate-type")
 		if aggType == "" {
 			aggType = "malformed"
@@ -193,7 +195,9 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 		event.AggregateType = "lead"
 	}
 
-	// Step 1: Open a single database transaction for idempotency record + handler mutation
+	// -------
+	// Open a single database transaction for idempotency record + handler mutation
+	// -------
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
 		_ = msg.NakWithDelay(c.cfg.BaseBackoff)
@@ -201,7 +205,9 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 	}
 	defer tx.Rollback(ctx)
 
-	// Step 2: Attempt inserting into processed_events to establish idempotency boundary
+	// -------
+	// Attempt inserting into processed_events to establish idempotency boundary
+	// -------
 	insertQuery := `
 		INSERT INTO processed_events (event_id, consumer_name, processed_at)
 		VALUES ($1, $2, clock_timestamp())
@@ -212,24 +218,34 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 		return fmt.Errorf("outbox_consumer: insert processed_events failed: %w", err)
 	}
 
+	// -------
 	// Idempotency Gate: If row was not inserted, this event was already processed
+	// -------
 	if tag.RowsAffected() == 0 {
 		_ = msg.Ack()
 		return nil
 	}
 
-	// Step 3: Execute handler inside the SAME transaction, passing event.ID for idempotency
+	// -------
+	// Execute handler inside the SAME transaction, passing event.ID for idempotency
+	// -------
 	handlerCtx, cancel := context.WithTimeout(ctx, c.cfg.HandlerTimeout)
 	handlerErr := c.handler.HandleEventTx(handlerCtx, tx, &event)
 	cancel()
 
 	if handlerErr != nil {
+		// -------
 		// Rollback both handler modifications and processed_events insertion
+		// -------
 		_ = tx.Rollback(ctx)
 
+		// -------
 		// Check delivery count using JetStream metadata NumDelivered
+		// -------
 		if int(meta.NumDelivered) >= c.cfg.MaxDeliveries {
+			// -------
 			// Poison message exceeded max deliveries: route to DLQ
+			// -------
 			dlqSubject := fmt.Sprintf("%s.%s", c.cfg.DLQSubjectPrefix, event.AggregateType)
 			dlqMsg := nats.NewMsg(dlqSubject)
 			dlqMsg.Header.Set("Nats-Msg-Id", fmt.Sprintf("dlq_%s", event.ID))
@@ -244,12 +260,16 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 				return fmt.Errorf("outbox_consumer: failed routing poison message to DLQ: %w", pubErr)
 			}
 
+			// -------
 			// Positively acknowledge original message from primary stream after routing to DLQ
+			// -------
 			_ = msg.Ack()
 			return nil
 		}
 
+		// -------
 		// Under max deliveries: calculate exponential backoff delay and NAK
+		// -------
 		backoff := c.cfg.BaseBackoff * (1 << (meta.NumDelivered - 1))
 		if backoff > c.cfg.MaxBackoff {
 			backoff = c.cfg.MaxBackoff
@@ -258,13 +278,17 @@ func (c *OutboxConsumer) ProcessMessage(ctx context.Context, msg *nats.Msg) erro
 		return handlerErr
 	}
 
-	// Step 4: Atomically commit handler business mutation and processed_events record
+	// -------
+	// Atomically commit handler business mutation and processed_events record
+	// -------
 	if err := tx.Commit(ctx); err != nil {
 		_ = msg.NakWithDelay(c.cfg.BaseBackoff)
 		return fmt.Errorf("outbox_consumer: failed committing tx: %w", err)
 	}
 
-	// Step 5: Acknowledge message delivery to JetStream
+	// -------
+	// Acknowledge message delivery to JetStream
+	// -------
 	_ = msg.Ack()
 	return nil
 }
@@ -294,7 +318,9 @@ func (c *OutboxConsumer) StartPullConsumer(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			default:
+				// -------
 				// Pull messages in bounded batches with short timeout
+				// -------
 				msgs, err := sub.Fetch(5, nats.MaxWait(200*time.Millisecond))
 				if err != nil {
 					if err == nats.ErrTimeout {

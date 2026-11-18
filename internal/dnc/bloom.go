@@ -55,7 +55,9 @@ func NormalizeNumber(phone string) string {
 		}
 	}
 	res := b.String()
+	// -------
 	// Strip leading US country code if 11 digits starting with 1 to normalize to 10 digits
+	// -------
 	if len(res) == 11 && res[0] == '1' {
 		res = res[1:]
 	}
@@ -91,7 +93,9 @@ func (bf *BloomFilter) Add(phone string) {
 	defer bf.mu.Unlock()
 
 	for i := uint32(0); i < bf.numHashes; i++ {
+		// -------
 		// Kirsch-Mitzenmacher double-hashing technique
+		// -------
 		combined := (h1 + uint64(i)*h2) % bf.numBits
 		word := combined / 64
 		bit := combined % 64
