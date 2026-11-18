@@ -1,33 +1,33 @@
 ﻿BEGIN
 SET
-                                                                                 QUERY PLAN                                                                                  
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Update on leads  (cost=5.35..428.17 rows=0 width=0) (actual time=36.268..36.276 rows=0 loops=1)
-   Buffers: shared hit=1761
-   ->  Nested Loop  (cost=5.35..428.17 rows=50 width=428) (actual time=11.098..13.713 rows=50 loops=1)
-         Buffers: shared hit=732
-         ->  HashAggregate  (cost=4.92..5.42 rows=50 width=56) (actual time=10.678..10.829 rows=50 loops=1)
+                                                                                  QUERY PLAN                                                                                   
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Update on leads  (cost=5.51..428.33 rows=0 width=0) (actual time=111.671..111.680 rows=0 loops=1)
+   Buffers: shared hit=6309 dirtied=2
+   ->  Nested Loop  (cost=5.51..428.33 rows=50 width=428) (actual time=73.923..79.547 rows=50 loops=1)
+         Buffers: shared hit=5313
+         ->  HashAggregate  (cost=5.08..5.58 rows=50 width=56) (actual time=73.718..73.952 rows=50 loops=1)
                Group Key: ("ANY_subquery".id)::text
                Batches: 1  Memory Usage: 24kB
-               Buffers: shared hit=532
-               ->  Subquery Scan on "ANY_subquery"  (cost=0.42..4.80 rows=50 width=56) (actual time=10.085..10.487 rows=50 loops=1)
-                     Buffers: shared hit=532
-                     ->  Limit  (cost=0.42..4.30 rows=50 width=34) (actual time=10.019..10.380 rows=50 loops=1)
-                           Buffers: shared hit=532
-                           ->  LockRows  (cost=0.42..75809.78 rows=979367 width=34) (actual time=10.014..10.362 rows=50 loops=1)
-                                 Buffers: shared hit=532
-                                 ->  Index Scan using idx_leads_comp on leads leads_1  (cost=0.42..66016.11 rows=979367 width=34) (actual time=9.454..9.695 rows=50 loops=1)
+               Buffers: shared hit=5113
+               ->  Subquery Scan on "ANY_subquery"  (cost=0.42..4.96 rows=50 width=56) (actual time=73.214..73.640 rows=50 loops=1)
+                     Buffers: shared hit=5113
+                     ->  Limit  (cost=0.42..4.46 rows=50 width=34) (actual time=73.156..73.529 rows=50 loops=1)
+                           Buffers: shared hit=5113
+                           ->  LockRows  (cost=0.42..77240.88 rows=958251 width=34) (actual time=73.151..73.508 rows=50 loops=1)
+                                 Buffers: shared hit=5113
+                                 ->  Index Scan using idx_leads_comp on leads leads_1  (cost=0.42..67658.38 rows=958251 width=34) (actual time=73.050..73.298 rows=50 loops=1)
                                        Index Cond: ((campaign_id)::text = 'camp-load-1'::text)
                                        Filter: (((status)::text = 'QUEUED'::text) AND ((next_attempt_at IS NULL) OR (next_attempt_at <= clock_timestamp())))
-                                       Rows Removed by Filter: 2130
-                                       Buffers: shared hit=482
-         ->  Index Scan using leads_pkey on leads  (cost=0.42..8.44 rows=1 width=22) (actual time=0.027..0.027 rows=1 loops=50)
+                                       Rows Removed by Filter: 24620
+                                       Buffers: shared hit=5063
+         ->  Index Scan using leads_pkey on leads  (cost=0.42..8.44 rows=1 width=22) (actual time=0.048..0.048 rows=1 loops=50)
                Index Cond: ((id)::text = ("ANY_subquery".id)::text)
                Buffers: shared hit=200
  Planning:
    Buffers: shared hit=301
- Planning Time: 17.868 ms
- Execution Time: 37.079 ms
+ Planning Time: 29.282 ms
+ Execution Time: 112.871 ms
 (26 rows)
 
 ROLLBACK

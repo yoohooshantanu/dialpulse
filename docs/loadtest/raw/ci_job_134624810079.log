@@ -1,0 +1,761 @@
+﻿ï»¿2026-11-18T06:32:10.3445009Z Current runner version: '2.338.2'
+2026-11-18T06:32:10.3465773Z ##[group]Runner Image Provisioner
+2026-11-18T06:32:10.3466529Z Hosted Compute Agent
+2026-11-18T06:32:10.3467068Z Version: 20261103.629
+2026-11-18T06:32:10.3467583Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-18T06:32:10.3468166Z Build Date: 2026-11-03T17:26:59Z
+2026-11-18T06:32:10.3468778Z Worker ID: {fe3e100d-60e6-4e73-94c3-c5c947e59357}
+2026-11-18T06:32:10.3469383Z Region: westus3
+2026-11-18T06:32:10.3470103Z Cloud: Azure
+2026-11-18T06:32:10.3470552Z ##[endgroup]
+2026-11-18T06:32:10.3471630Z ##[group]Operating System
+2026-11-18T06:32:10.3472188Z Ubuntu
+2026-11-18T06:32:10.3472691Z 26.04.1
+2026-11-18T06:32:10.3473273Z LTS
+2026-11-18T06:32:10.3473701Z ##[endgroup]
+2026-11-18T06:32:10.3474149Z ##[group]Runner Image
+2026-11-18T06:32:10.3474678Z Image: ubuntu-26.04
+2026-11-18T06:32:10.3475166Z Version: 20261111.196.1
+2026-11-18T06:32:10.3476221Z Included Software: https://github.com/actions/runner-images/blob/ubuntu26/20261111.196/images/ubuntu/Ubuntu2604-Readme.md
+2026-11-18T06:32:10.3477434Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu26%2F20261111.196
+2026-11-18T06:32:10.3478247Z ##[endgroup]
+2026-11-18T06:32:10.3479279Z ##[group]GITHUB_TOKEN Permissions
+2026-11-18T06:32:10.3481034Z Contents: read
+2026-11-18T06:32:10.3481524Z Metadata: read
+2026-11-18T06:32:10.3481966Z Packages: read
+2026-11-18T06:32:10.3482646Z ##[endgroup]
+2026-11-18T06:32:10.3484545Z Secret source: Actions
+2026-11-18T06:32:10.3485351Z Cache mode: write
+2026-11-18T06:32:10.3486070Z Prepare workflow directory
+2026-11-18T06:32:10.3829851Z Prepare all required actions
+2026-11-18T06:32:10.3885452Z Getting action download info
+2026-11-18T06:32:10.7505903Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-11-18T06:32:10.8575519Z Download action repository 'actions/setup-go@v5' (SHA:40f1582b2485089dde7abd97c1529aa768e1baff)
+2026-11-18T06:32:11.6223846Z Complete job name: Build & Test
+2026-11-18T06:32:11.6723539Z ##[group]Checking docker version
+2026-11-18T06:32:11.6734477Z ##[command]/usr/bin/docker version --format '{{.Server.APIVersion}}'
+2026-11-18T06:32:11.7481007Z '1.54'
+2026-11-18T06:32:11.7493452Z Docker daemon API version: '1.54'
+2026-11-18T06:32:11.7494139Z ##[command]/usr/bin/docker version --format '{{.Client.APIVersion}}'
+2026-11-18T06:32:11.7646627Z '1.54'
+2026-11-18T06:32:11.7658953Z Docker client API version: '1.54'
+2026-11-18T06:32:11.7663068Z ##[endgroup]
+2026-11-18T06:32:11.7665408Z ##[group]Clean up resources from previous jobs
+2026-11-18T06:32:11.7670137Z ##[command]/usr/bin/docker ps --all --quiet --no-trunc --filter "label=5295d3"
+2026-11-18T06:32:11.7807707Z ##[command]/usr/bin/docker network prune --force --filter "label=5295d3"
+2026-11-18T06:32:11.7930400Z ##[endgroup]
+2026-11-18T06:32:11.7930879Z ##[group]Create local container network
+2026-11-18T06:32:11.7939360Z ##[command]/usr/bin/docker network create --label 5295d3 github_network_badb95a4878c417882c4f760c43f91e6
+2026-11-18T06:32:11.8391377Z 53dd66c14f6b35c72f22a6e5ca56c3e130f45a39f7b433b2dd0bfc87856bd9eb
+2026-11-18T06:32:11.8410579Z ##[endgroup]
+2026-11-18T06:32:11.8429918Z ##[group]Starting postgres service container
+2026-11-18T06:32:11.8446871Z ##[command]/usr/bin/docker pull postgres:16-alpine
+2026-11-18T06:32:12.5520068Z 16-alpine: Pulling from library/postgres
+2026-11-18T06:32:12.7532337Z 41713cbe7496: Pulling fs layer
+2026-11-18T06:32:12.7535110Z b7106f8586ee: Pulling fs layer
+2026-11-18T06:32:12.7539085Z 881fc932939e: Pulling fs layer
+2026-11-18T06:32:12.7540376Z 5788ee6f91dc: Pulling fs layer
+2026-11-18T06:32:12.7541598Z f85a33377d83: Pulling fs layer
+2026-11-18T06:32:12.7542745Z 86cc7190d1c0: Pulling fs layer
+2026-11-18T06:32:12.7544056Z f997efa53d88: Pulling fs layer
+2026-11-18T06:32:12.7545339Z 5959c7ea857a: Pulling fs layer
+2026-11-18T06:32:12.7546663Z a2d17f5b24d5: Pulling fs layer
+2026-11-18T06:32:12.7548149Z ea98517a315c: Pulling fs layer
+2026-11-18T06:32:12.7549539Z 6bceb0db2fd1: Pulling fs layer
+2026-11-18T06:32:12.9594965Z 5959c7ea857a: Download complete
+2026-11-18T06:32:12.9597408Z b7106f8586ee: Download complete
+2026-11-18T06:32:12.9599559Z 86cc7190d1c0: Download complete
+2026-11-18T06:32:12.9600928Z f997efa53d88: Download complete
+2026-11-18T06:32:12.9602437Z 41713cbe7496: Download complete
+2026-11-18T06:32:13.0616472Z f85a33377d83: Download complete
+2026-11-18T06:32:13.0623393Z 6bceb0db2fd1: Download complete
+2026-11-18T06:32:13.0625742Z 881fc932939e: Download complete
+2026-11-18T06:32:13.0635378Z 5788ee6f91dc: Download complete
+2026-11-18T06:32:13.0639805Z ea98517a315c: Download complete
+2026-11-18T06:32:13.1587915Z 89872578f4c5: Download complete
+2026-11-18T06:32:13.1733061Z 881fc932939e: Pull complete
+2026-11-18T06:32:13.1758623Z ea98517a315c: Pull complete
+2026-11-18T06:32:13.2583006Z df1cd84c95ef: Download complete
+2026-11-18T06:32:13.2612636Z f997efa53d88: Pull complete
+2026-11-18T06:32:13.2620416Z 41713cbe7496: Pull complete
+2026-11-18T06:32:13.2645434Z 5788ee6f91dc: Pull complete
+2026-11-18T06:32:13.8585845Z a2d17f5b24d5: Download complete
+2026-11-18T06:32:15.0621623Z f85a33377d83: Pull complete
+2026-11-18T06:32:15.0632483Z a2d17f5b24d5: Pull complete
+2026-11-18T06:32:15.0872715Z 5959c7ea857a: Pull complete
+2026-11-18T06:32:15.0881357Z b7106f8586ee: Pull complete
+2026-11-18T06:32:15.0889941Z 86cc7190d1c0: Pull complete
+2026-11-18T06:32:15.0899036Z 6bceb0db2fd1: Pull complete
+2026-11-18T06:32:15.0901459Z Digest: sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
+2026-11-18T06:32:15.0902022Z Status: Downloaded newer image for postgres:16-alpine
+2026-11-18T06:32:15.0906727Z docker.io/library/postgres:16-alpine
+2026-11-18T06:32:15.0981185Z ##[command]/usr/bin/docker create --name fe4583f525d94eeea2457b1ff2255436_postgres16alpine_e5fc7f --label 5295d3 --network github_network_badb95a4878c417882c4f760c43f91e6 --network-alias postgres -p 5432:5432 --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5 -e "POSTGRES_DB=dialpulse_test" -e "POSTGRES_USER=postgres" -e "POSTGRES_PASSWORD=password" -e GITHUB_ACTIONS=true -e CI=true postgres:16-alpine
+2026-11-18T06:32:16.7180832Z 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:32:16.7204103Z ##[command]/usr/bin/docker start 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:32:16.8912718Z 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:32:16.8934115Z ##[command]/usr/bin/docker ps --all --filter id=8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1 --filter status=running --no-trunc --format "{{.ID}} {{.Status}}"
+2026-11-18T06:32:16.9168959Z 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1 Up Less than a second (health: starting)
+2026-11-18T06:32:16.9191651Z ##[command]/usr/bin/docker port 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:32:16.9320754Z 5432/tcp -> 0.0.0.0:5432
+2026-11-18T06:32:16.9321155Z 5432/tcp -> [::]:5432
+2026-11-18T06:32:16.9364282Z ##[endgroup]
+2026-11-18T06:32:16.9371210Z ##[group]Waiting for all services to be ready
+2026-11-18T06:32:16.9382327Z ##[command]/usr/bin/docker inspect --format="{{if .Config.Healthcheck}}{{print .State.Health.Status}}{{end}}" 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:32:16.9520192Z starting
+2026-11-18T06:32:16.9541365Z postgres service is starting, waiting 2 seconds before checking again.
+2026-11-18T06:32:18.9544443Z ##[command]/usr/bin/docker inspect --format="{{if .Config.Healthcheck}}{{print .State.Health.Status}}{{end}}" 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:32:18.9664372Z starting
+2026-11-18T06:32:18.9677599Z postgres service is starting, waiting 4 seconds before checking again.
+2026-11-18T06:32:22.9960076Z ##[command]/usr/bin/docker inspect --format="{{if .Config.Healthcheck}}{{print .State.Health.Status}}{{end}}" 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:32:23.0085097Z starting
+2026-11-18T06:32:23.0100361Z postgres service is starting, waiting 8 seconds before checking again.
+2026-11-18T06:32:31.1208055Z ##[command]/usr/bin/docker inspect --format="{{if .Config.Healthcheck}}{{print .State.Health.Status}}{{end}}" 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:32:31.1335919Z healthy
+2026-11-18T06:32:31.1354399Z postgres service is healthy.
+2026-11-18T06:32:31.1355056Z ##[endgroup]
+2026-11-18T06:32:31.1584234Z ##[group]Run actions/checkout@v4
+2026-11-18T06:32:31.1584658Z with:
+2026-11-18T06:32:31.1584844Z   repository: yoohooshantanu/dialpulse
+2026-11-18T06:32:31.1586978Z   token: ***
+2026-11-18T06:32:31.1587151Z   ssh-strict: true
+2026-11-18T06:32:31.1587326Z   ssh-user: git
+2026-11-18T06:32:31.1587503Z   persist-credentials: true
+2026-11-18T06:32:31.1587696Z   clean: true
+2026-11-18T06:32:31.1587879Z   sparse-checkout-cone-mode: true
+2026-11-18T06:32:31.1588084Z   fetch-depth: 1
+2026-11-18T06:32:31.1588251Z   fetch-tags: false
+2026-11-18T06:32:31.1588420Z   show-progress: true
+2026-11-18T06:32:31.1588606Z   lfs: false
+2026-11-18T06:32:31.1588762Z   submodules: false
+2026-11-18T06:32:31.1588930Z   set-safe-directory: true
+2026-11-18T06:32:31.1589132Z   allow-unsafe-pr-checkout: false
+2026-11-18T06:32:31.1589463Z ##[endgroup]
+2026-11-18T06:32:31.3612015Z Syncing repository: yoohooshantanu/dialpulse
+2026-11-18T06:32:31.3613422Z ##[group]Getting Git version info
+2026-11-18T06:32:31.3613811Z Working directory is '/home/runner/work/dialpulse/dialpulse'
+2026-11-18T06:32:31.3614515Z [command]/usr/bin/git version
+2026-11-18T06:32:31.3626339Z git version 2.56.1
+2026-11-18T06:32:31.3641233Z ##[endgroup]
+2026-11-18T06:32:31.3652502Z Temporarily overriding HOME='/home/runner/work/_temp/5e0c22cd-9d57-4f85-8aba-8c50c0c9ab45' before making global git config changes
+2026-11-18T06:32:31.3653535Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-18T06:32:31.3656276Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dialpulse/dialpulse
+2026-11-18T06:32:31.3705933Z Deleting the contents of '/home/runner/work/dialpulse/dialpulse'
+2026-11-18T06:32:31.3710567Z ##[group]Initializing the repository
+2026-11-18T06:32:31.3713625Z [command]/usr/bin/git init /home/runner/work/dialpulse/dialpulse
+2026-11-18T06:32:31.3784823Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-11-18T06:32:31.3785746Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-11-18T06:32:31.3786668Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-11-18T06:32:31.3787417Z hint: call:
+2026-11-18T06:32:31.3787854Z hint:
+2026-11-18T06:32:31.3788126Z hint: 	git config --global init.defaultBranch <name>
+2026-11-18T06:32:31.3788409Z hint:
+2026-11-18T06:32:31.3788665Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-11-18T06:32:31.3789059Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-11-18T06:32:31.3789525Z hint:
+2026-11-18T06:32:31.3789719Z hint: 	git branch -m <name>
+2026-11-18T06:32:31.3789909Z hint:
+2026-11-18T06:32:31.3790167Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-11-18T06:32:31.3793236Z Initialized empty Git repository in /home/runner/work/dialpulse/dialpulse/.git/
+2026-11-18T06:32:31.3802983Z [command]/usr/bin/git remote add origin https://github.com/yoohooshantanu/dialpulse
+2026-11-18T06:32:31.3844912Z ##[endgroup]
+2026-11-18T06:32:31.3845469Z ##[group]Disabling automatic garbage collection
+2026-11-18T06:32:31.3848276Z [command]/usr/bin/git config --local gc.auto 0
+2026-11-18T06:32:31.3882825Z ##[endgroup]
+2026-11-18T06:32:31.3883467Z ##[group]Setting up auth
+2026-11-18T06:32:31.3888832Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-18T06:32:31.3917761Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-18T06:32:31.4418318Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-18T06:32:31.4446611Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-18T06:32:31.4674614Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-18T06:32:31.4702686Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-18T06:32:31.4931622Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-11-18T06:32:31.4966614Z ##[endgroup]
+2026-11-18T06:32:31.4967171Z ##[group]Fetching the repository
+2026-11-18T06:32:31.4974165Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +3a06eefe2748fdd3e385c2c0a412ed1956bd4b90:refs/remotes/origin/feat/loadtest-outbox
+2026-11-18T06:32:32.0268400Z From https://github.com/yoohooshantanu/dialpulse
+2026-11-18T06:32:32.0269053Z  * [new ref]         3a06eefe2748fdd3e385c2c0a412ed1956bd4b90 -> origin/feat/loadtest-outbox
+2026-11-18T06:32:32.0273387Z ##[endgroup]
+2026-11-18T06:32:32.0273715Z ##[group]Determining the checkout info
+2026-11-18T06:32:32.0276086Z ##[endgroup]
+2026-11-18T06:32:32.0281993Z [command]/usr/bin/git sparse-checkout disable
+2026-11-18T06:32:32.0326728Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-11-18T06:32:32.0351728Z ##[group]Checking out the ref
+2026-11-18T06:32:32.0357002Z [command]/usr/bin/git checkout --progress --force -B feat/loadtest-outbox refs/remotes/origin/feat/loadtest-outbox
+2026-11-18T06:32:32.0449731Z Switched to a new branch 'feat/loadtest-outbox'
+2026-11-18T06:32:32.0453900Z branch 'feat/loadtest-outbox' set up to track 'origin/feat/loadtest-outbox'.
+2026-11-18T06:32:32.0457906Z ##[endgroup]
+2026-11-18T06:32:32.0494041Z [command]/usr/bin/git log -1 --format=%H
+2026-11-18T06:32:32.0513828Z 3a06eefe2748fdd3e385c2c0a412ed1956bd4b90
+2026-11-18T06:32:32.0686335Z ##[group]Run docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js -m 8222
+2026-11-18T06:32:32.0686901Z [36;1mdocker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js -m 8222[0m
+2026-11-18T06:32:32.0687249Z [36;1mfor i in {1..30}; do[0m
+2026-11-18T06:32:32.0687520Z [36;1m  if curl -sf http://localhost:8222/healthz; then[0m
+2026-11-18T06:32:32.0687810Z [36;1m    echo "NATS JetStream is healthy and ready"[0m
+2026-11-18T06:32:32.0688044Z [36;1m    break[0m
+2026-11-18T06:32:32.0688211Z [36;1m  fi[0m
+2026-11-18T06:32:32.0688396Z [36;1m  echo "Waiting for NATS /healthz..."[0m
+2026-11-18T06:32:32.0688635Z [36;1m  sleep 1[0m
+2026-11-18T06:32:32.0688799Z [36;1mdone[0m
+2026-11-18T06:32:32.0739009Z shell: /usr/bin/bash -e {0}
+2026-11-18T06:32:32.0739228Z ##[endgroup]
+2026-11-18T06:32:32.0936107Z Unable to find image 'nats:2-alpine' locally
+2026-11-18T06:32:32.7196355Z 2-alpine: Pulling from library/nats
+2026-11-18T06:32:32.9440340Z 97cb5292e90c: Pulling fs layer
+2026-11-18T06:32:32.9440941Z 2058ceffc175: Pulling fs layer
+2026-11-18T06:32:32.9441518Z f5fbdd51c05f: Pulling fs layer
+2026-11-18T06:32:32.9441815Z 710f3da1112f: Pulling fs layer
+2026-11-18T06:32:33.0966113Z 2058ceffc175: Download complete
+2026-11-18T06:32:33.1957611Z 97cb5292e90c: Download complete
+2026-11-18T06:32:33.1958147Z f5fbdd51c05f: Download complete
+2026-11-18T06:32:33.1961270Z 710f3da1112f: Download complete
+2026-11-18T06:32:33.3959279Z 6b9066e344d7: Download complete
+2026-11-18T06:32:33.4003363Z 710f3da1112f: Pull complete
+2026-11-18T06:32:33.4990307Z f5fbdd51c05f: Pull complete
+2026-11-18T06:32:33.5148255Z 2058ceffc175: Pull complete
+2026-11-18T06:32:33.5167576Z 97cb5292e90c: Pull complete
+2026-11-18T06:32:33.5168424Z Digest: sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a
+2026-11-18T06:32:33.5169353Z Status: Downloaded newer image for nats:2-alpine
+2026-11-18T06:32:33.7121611Z a7ec7420a0a02836a521f7cd98660199023d4e1501f7a099d2b93e276085ac30
+2026-11-18T06:32:33.8479677Z {"status":"ok"}NATS JetStream is healthy and ready
+2026-11-18T06:32:33.8515298Z ##[group]Run sudo apt-get update && sudo apt-get install -y postgresql-client
+2026-11-18T06:32:33.8515747Z [36;1msudo apt-get update && sudo apt-get install -y postgresql-client[0m
+2026-11-18T06:32:33.8516222Z [36;1mPGPASSWORD=password psql -h localhost -U postgres -d dialpulse_test -f migrations/001_init.sql[0m
+2026-11-18T06:32:33.8516767Z [36;1mPGPASSWORD=password psql -h localhost -U postgres -d dialpulse_test -f migrations/002_outbox.sql[0m
+2026-11-18T06:32:33.8561089Z shell: /usr/bin/bash -e {0}
+2026-11-18T06:32:33.8561306Z ##[endgroup]
+2026-11-18T06:32:33.9204315Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+2026-11-18T06:32:33.9359455Z Get:6 https://packages.microsoft.com/ubuntu/26.04/prod resolute InRelease [3964 B]
+2026-11-18T06:32:33.9436358Z Hit:2 http://azure.archive.ubuntu.com/ubuntu resolute InRelease
+2026-11-18T06:32:33.9458146Z Get:3 http://azure.archive.ubuntu.com/ubuntu resolute-updates InRelease [137 kB]
+2026-11-18T06:32:33.9481186Z Get:4 http://azure.archive.ubuntu.com/ubuntu resolute-backports InRelease [137 kB]
+2026-11-18T06:32:33.9517581Z Get:5 http://azure.archive.ubuntu.com/ubuntu resolute-security InRelease [137 kB]
+2026-11-18T06:32:33.9584537Z Get:7 https://packages.microsoft.com/ubuntu/26.04/prod resolute/main amd64 Packages [165 kB]
+2026-11-18T06:32:33.9725029Z Get:8 https://packages.microsoft.com/ubuntu/26.04/prod resolute/main arm64 Packages [151 kB]
+2026-11-18T06:32:33.9874164Z Get:9 http://azure.archive.ubuntu.com/ubuntu resolute-updates/main amd64v3 Packages [874 kB]
+2026-11-18T06:32:33.9891042Z Get:10 http://azure.archive.ubuntu.com/ubuntu resolute-updates/main Translation-en [196 kB]
+2026-11-18T06:32:33.9908027Z Get:11 http://azure.archive.ubuntu.com/ubuntu resolute-updates/universe amd64v3 Packages [391 kB]
+2026-11-18T06:32:33.9931982Z Get:12 http://azure.archive.ubuntu.com/ubuntu resolute-updates/universe Translation-en [123 kB]
+2026-11-18T06:32:34.0139013Z Get:13 http://azure.archive.ubuntu.com/ubuntu resolute-security/main amd64v3 Packages [719 kB]
+2026-11-18T06:32:34.0152120Z Get:14 http://azure.archive.ubuntu.com/ubuntu resolute-security/main Translation-en [158 kB]
+2026-11-18T06:32:34.0168965Z Get:15 http://azure.archive.ubuntu.com/ubuntu resolute-security/universe amd64v3 Packages [221 kB]
+2026-11-18T06:32:34.0187117Z Get:16 http://azure.archive.ubuntu.com/ubuntu resolute-security/universe Translation-en [72.6 kB]
+2026-11-18T06:32:34.0198947Z Get:17 http://azure.archive.ubuntu.com/ubuntu resolute-security/restricted amd64v3 Packages [590 kB]
+2026-11-18T06:32:34.0229823Z Get:18 http://azure.archive.ubuntu.com/ubuntu resolute-security/restricted Translation-en [122 kB]
+2026-11-18T06:32:36.2474997Z Fetched 4197 kB in 0s (14.9 MB/s)
+2026-11-18T06:32:36.7741613Z Reading package lists...
+2026-11-18T06:32:36.8027011Z Reading package lists...
+2026-11-18T06:32:36.9342675Z Building dependency tree...
+2026-11-18T06:32:36.9349526Z Reading state information...
+2026-11-18T06:32:37.0177276Z Solving dependencies...
+2026-11-18T06:32:37.1069378Z The following NEW packages will be installed:
+2026-11-18T06:32:37.1069867Z   postgresql-client
+2026-11-18T06:32:37.1245324Z 0 upgraded, 1 newly installed, 0 to remove and 29 not upgraded.
+2026-11-18T06:32:37.1245893Z Need to get 15.2 kB of archives.
+2026-11-18T06:32:37.1247282Z After this operation, 21.5 kB of additional disk space will be used.
+2026-11-18T06:32:37.1247734Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+2026-11-18T06:32:37.1875630Z Get:2 http://azure.archive.ubuntu.com/ubuntu resolute/main amd64v3 postgresql-client all 18+290ubuntu1 [15.2 kB]
+2026-11-18T06:32:37.4439144Z Fetched 15.2 kB in 0s (206 kB/s)
+2026-11-18T06:32:37.4627517Z Selecting previously unselected package postgresql-client.
+2026-11-18T06:32:37.4828466Z (Reading database ... 
+2026-11-18T06:32:37.4829233Z (Reading database ... 5%
+2026-11-18T06:32:37.4829555Z (Reading database ... 10%
+2026-11-18T06:32:37.4829838Z (Reading database ... 15%
+2026-11-18T06:32:37.4830170Z (Reading database ... 20%
+2026-11-18T06:32:37.4830710Z (Reading database ... 25%
+2026-11-18T06:32:37.4830974Z (Reading database ... 30%
+2026-11-18T06:32:37.4831247Z (Reading database ... 35%
+2026-11-18T06:32:37.4831521Z (Reading database ... 40%
+2026-11-18T06:32:37.4831784Z (Reading database ... 45%
+2026-11-18T06:32:37.4832056Z (Reading database ... 50%
+2026-11-18T06:32:37.5536546Z (Reading database ... 55%
+2026-11-18T06:32:37.7571906Z (Reading database ... 60%
+2026-11-18T06:32:37.8610804Z (Reading database ... 65%
+2026-11-18T06:32:38.0583634Z (Reading database ... 70%
+2026-11-18T06:32:38.2035724Z (Reading database ... 75%
+2026-11-18T06:32:38.4068472Z (Reading database ... 80%
+2026-11-18T06:32:38.5969680Z (Reading database ... 85%
+2026-11-18T06:32:38.8024494Z (Reading database ... 90%
+2026-11-18T06:32:38.9565102Z (Reading database ... 95%
+2026-11-18T06:32:38.9565447Z (Reading database ... 100%
+2026-11-18T06:32:38.9565870Z (Reading database ... 213946 files and directories currently installed.)
+2026-11-18T06:32:38.9608609Z Preparing to unpack .../postgresql-client_18+290ubuntu1_all.deb ...
+2026-11-18T06:32:38.9705197Z Unpacking postgresql-client (18+290ubuntu1) ...
+2026-11-18T06:32:39.0076917Z Setting up postgresql-client (18+290ubuntu1) ...
+2026-11-18T06:32:39.5046094Z 
+2026-11-18T06:32:39.5046640Z Running kernel seems to be up-to-date.
+2026-11-18T06:32:39.5046944Z 
+2026-11-18T06:32:39.5047054Z Restarting services...
+2026-11-18T06:32:39.5128752Z 
+2026-11-18T06:32:39.5129110Z Service restarts being deferred:
+2026-11-18T06:32:39.5131788Z  systemctl restart hosted-compute-agent.service
+2026-11-18T06:32:39.5132079Z 
+2026-11-18T06:32:39.5132845Z No containers need to be restarted.
+2026-11-18T06:32:39.5133058Z 
+2026-11-18T06:32:39.5133363Z No user sessions are running outdated binaries.
+2026-11-18T06:32:39.5133705Z 
+2026-11-18T06:32:39.5134059Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+2026-11-18T06:32:40.3818043Z CREATE TABLE
+2026-11-18T06:32:40.3878245Z CREATE TABLE
+2026-11-18T06:32:40.3881808Z psql:migrations/001_init.sql:40: NOTICE:  column "lease_token" of relation "leads" already exists, skipping
+2026-11-18T06:32:40.3882730Z ALTER TABLE
+2026-11-18T06:32:40.3903802Z CREATE INDEX
+2026-11-18T06:32:40.3950740Z CREATE TABLE
+2026-11-18T06:32:40.3963394Z CREATE INDEX
+2026-11-18T06:32:40.3980939Z CREATE TABLE
+2026-11-18T06:32:40.4309490Z CREATE TABLE
+2026-11-18T06:32:40.4328680Z CREATE INDEX
+2026-11-18T06:32:40.4347142Z CREATE TABLE
+2026-11-18T06:32:40.4367658Z CREATE TABLE
+2026-11-18T06:32:40.4454301Z ##[group]Run actions/setup-go@v5
+2026-11-18T06:32:40.4454534Z with:
+2026-11-18T06:32:40.4454701Z   go-version: 1.23
+2026-11-18T06:32:40.4454879Z   cache: true
+2026-11-18T06:32:40.4455049Z   check-latest: false
+2026-11-18T06:32:40.4457079Z   token: ***
+2026-11-18T06:32:40.4457248Z ##[endgroup]
+2026-11-18T06:32:40.5511504Z Setup go version spec 1.23
+2026-11-18T06:32:40.5700001Z Attempting to download 1.23...
+2026-11-18T06:32:40.5818294Z (node:3037) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-18T06:32:40.5818974Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-18T06:32:41.5559980Z matching 1.23...
+2026-11-18T06:32:41.5586646Z Acquiring 1.23.12 from https://github.com/actions/go-versions/releases/download/1.23.12-16792118003/go-1.23.12-linux-x64.tar.gz
+2026-11-18T06:32:42.0819322Z Extracting Go...
+2026-11-18T06:32:42.0938979Z [command]/usr/bin/tar xz --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/eea31311-ac6a-4852-96bc-82895ecfabfc -f /home/runner/work/_temp/3c7c01ee-c104-4d32-93a9-16ce33fafa9d
+2026-11-18T06:32:43.0458212Z Successfully extracted go to /home/runner/work/_temp/eea31311-ac6a-4852-96bc-82895ecfabfc
+2026-11-18T06:32:43.0458607Z Adding to the cache ...
+2026-11-18T06:32:46.6622134Z Successfully cached go to /opt/hostedtoolcache/go/1.23.12/x64
+2026-11-18T06:32:46.6624492Z Added go to the path
+2026-11-18T06:32:46.6626879Z Successfully set up Go version 1.23
+2026-11-18T06:32:46.6818044Z [command]/opt/hostedtoolcache/go/1.23.12/x64/bin/go env GOMODCACHE
+2026-11-18T06:32:46.6858927Z [command]/opt/hostedtoolcache/go/1.23.12/x64/bin/go env GOCACHE
+2026-11-18T06:32:46.6907940Z /home/runner/go/pkg/mod
+2026-11-18T06:32:46.6917852Z /home/runner/.cache/go-build
+2026-11-18T06:32:46.9071783Z Cache hit for: setup-go-Linux-x64-ubuntu26-go-1.23.12-ab6b5b857451125d580c73518ca7fadc9a30b9285d20cf72e22549e002e1a3ad
+2026-11-18T06:32:46.9160522Z (node:3037) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-11-18T06:32:48.1449491Z Received 54525952 of 159880137 (34.1%), 51.9 MBs/sec
+2026-11-18T06:32:49.0111935Z Received 159880137 of 159880137 (100.0%), 81.7 MBs/sec
+2026-11-18T06:32:49.0112306Z Cache Size: ~152 MB (159880137 B)
+2026-11-18T06:32:49.0136527Z [command]/usr/bin/tar -xf /home/runner/work/_temp/21922f5f-9e35-4062-9b74-fa409355a3c8/cache.tzst -P -C /home/runner/work/dialpulse/dialpulse --use-compress-program unzstd
+2026-11-18T06:32:49.6190919Z Cache restored successfully
+2026-11-18T06:32:49.6259235Z Cache restored from key: setup-go-Linux-x64-ubuntu26-go-1.23.12-ab6b5b857451125d580c73518ca7fadc9a30b9285d20cf72e22549e002e1a3ad
+2026-11-18T06:32:49.6278223Z go version go1.23.12 linux/amd64
+2026-11-18T06:32:49.6278389Z 
+2026-11-18T06:32:49.6278643Z ##[group]go env
+2026-11-18T06:32:49.6442836Z GO111MODULE=''
+2026-11-18T06:32:49.6443267Z GOARCH='amd64'
+2026-11-18T06:32:49.6443483Z GOBIN=''
+2026-11-18T06:32:49.6443681Z GOCACHE='/home/runner/.cache/go-build'
+2026-11-18T06:32:49.6443942Z GOENV='/home/runner/.config/go/env'
+2026-11-18T06:32:49.6444167Z GOEXE=''
+2026-11-18T06:32:49.6444341Z GOEXPERIMENT=''
+2026-11-18T06:32:49.6444514Z GOFLAGS=''
+2026-11-18T06:32:49.6444695Z GOHOSTARCH='amd64'
+2026-11-18T06:32:49.6444864Z GOHOSTOS='linux'
+2026-11-18T06:32:49.6445038Z GOINSECURE=''
+2026-11-18T06:32:49.6445228Z GOMODCACHE='/home/runner/go/pkg/mod'
+2026-11-18T06:32:49.6445441Z GONOPROXY=''
+2026-11-18T06:32:49.6445601Z GONOSUMDB=''
+2026-11-18T06:32:49.6445755Z GOOS='linux'
+2026-11-18T06:32:49.6445927Z GOPATH='/home/runner/go'
+2026-11-18T06:32:49.6446111Z GOPRIVATE=''
+2026-11-18T06:32:49.6465129Z GOPROXY='https://proxy.golang.org,direct'
+2026-11-18T06:32:49.6465640Z GOROOT='/opt/hostedtoolcache/go/1.23.12/x64'
+2026-11-18T06:32:49.6466013Z GOSUMDB='sum.golang.org'
+2026-11-18T06:32:49.6466224Z GOTMPDIR=''
+2026-11-18T06:32:49.6466676Z GOTOOLCHAIN='auto'
+2026-11-18T06:32:49.6466956Z GOTOOLDIR='/opt/hostedtoolcache/go/1.23.12/x64/pkg/tool/linux_amd64'
+2026-11-18T06:32:49.6467252Z GOVCS=''
+2026-11-18T06:32:49.6467422Z GOVERSION='go1.23.12'
+2026-11-18T06:32:49.6467597Z GODEBUG=''
+2026-11-18T06:32:49.6467772Z GOTELEMETRY='local'
+2026-11-18T06:32:49.6468006Z GOTELEMETRYDIR='/home/runner/.config/go/telemetry'
+2026-11-18T06:32:49.6468261Z GCCGO='gccgo'
+2026-11-18T06:32:49.6468426Z GOAMD64='v1'
+2026-11-18T06:32:49.6468587Z AR='ar'
+2026-11-18T06:32:49.6468743Z CC='gcc'
+2026-11-18T06:32:49.6468930Z CXX='g++'
+2026-11-18T06:32:49.6469114Z CGO_ENABLED='1'
+2026-11-18T06:32:49.6469342Z GOMOD='/home/runner/work/dialpulse/dialpulse/go.mod'
+2026-11-18T06:32:49.6469600Z GOWORK=''
+2026-11-18T06:32:49.6469766Z CGO_CFLAGS='-O2 -g'
+2026-11-18T06:32:49.6469948Z CGO_CPPFLAGS=''
+2026-11-18T06:32:49.6470119Z CGO_CXXFLAGS='-O2 -g'
+2026-11-18T06:32:49.6470308Z CGO_FFLAGS='-O2 -g'
+2026-11-18T06:32:49.6470478Z CGO_LDFLAGS='-O2 -g'
+2026-11-18T06:32:49.6470669Z PKG_CONFIG='pkg-config'
+2026-11-18T06:32:49.6471220Z GOGCCFLAGS='-fPIC -m64 -pthread -Wl,--no-gc-sections -fmessage-length=0 -ffile-prefix-map=/tmp/go-build421920212=/tmp/go-build -gno-record-gcc-switches'
+2026-11-18T06:32:49.6471654Z 
+2026-11-18T06:32:49.6471897Z ##[endgroup]
+2026-11-18T06:32:49.6736896Z ##[group]Run go test -v -race ./tests/...
+2026-11-18T06:32:49.6737319Z [36;1mgo test -v -race ./tests/...[0m
+2026-11-18T06:32:49.6782975Z shell: /usr/bin/bash -e {0}
+2026-11-18T06:32:49.6783344Z env:
+2026-11-18T06:32:49.6783844Z   TEST_DATABASE_URL: ***localhost:5432/dialpulse_test?sslmode=disable
+2026-11-18T06:32:49.6784142Z   REQUIRE_DB: 1
+2026-11-18T06:32:49.6784340Z   TEST_NATS_URL: nats://localhost:4222
+2026-11-18T06:32:49.6784562Z   REQUIRE_NATS: 1
+2026-11-18T06:32:49.6784740Z ##[endgroup]
+2026-11-18T06:32:51.1352111Z === RUN   TestDNCBloomFilter
+2026-11-18T06:32:51.1352844Z --- PASS: TestDNCBloomFilter (0.00s)
+2026-11-18T06:32:51.1353714Z === RUN   TestTimezoneGovernor
+2026-11-18T06:32:51.1605271Z --- PASS: TestTimezoneGovernor (0.03s)
+2026-11-18T06:32:51.1605713Z === RUN   TestPredictivePacerCalculation
+2026-11-18T06:32:51.1606339Z --- PASS: TestPredictivePacerCalculation (0.00s)
+2026-11-18T06:32:51.1606963Z === RUN   TestCampaignPriorityDispatching
+2026-11-18T06:32:51.1614094Z {"time":"2026-11-18T06:32:51.161194819Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_priority_test","accepted":3,"duplicates_skipped":0}
+2026-11-18T06:32:51.1615943Z --- PASS: TestCampaignPriorityDispatching (0.00s)
+2026-11-18T06:32:51.1616396Z === RUN   TestCampaignExecutionLifecycle
+2026-11-18T06:32:51.1617076Z {"time":"2026-11-18T06:32:51.161457796Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_exec_test","accepted":4,"duplicates_skipped":0}
+2026-11-18T06:32:51.2121903Z {"time":"2026-11-18T06:32:51.211976089Z","level":"WARN","msg":"dial_routed_to_dlq_dnc","lead_id":"lead_225e479b","phone":"2125559999"}
+2026-11-18T06:32:51.2265839Z {"time":"2026-11-18T06:32:51.226431458Z","level":"INFO","msg":"call_connected","lead_id":"lead_e8e6055f","campaign_id":"camp_exec_test"}
+2026-11-18T06:32:51.2297549Z {"time":"2026-11-18T06:32:51.229620802Z","level":"INFO","msg":"call_connected","lead_id":"lead_fd64f808","campaign_id":"camp_exec_test"}
+2026-11-18T06:32:51.2348998Z {"time":"2026-11-18T06:32:51.234760075Z","level":"INFO","msg":"call_connected","lead_id":"lead_006acedf","campaign_id":"camp_exec_test"}
+2026-11-18T06:32:51.3619842Z {"time":"2026-11-18T06:32:51.36174445Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_exec_test"}
+2026-11-18T06:32:51.3620606Z --- PASS: TestCampaignExecutionLifecycle (0.20s)
+2026-11-18T06:32:51.3621117Z === RUN   TestCurfewHoldoffNoBusySpinAndCleanShutdown
+2026-11-18T06:32:51.3627403Z {"time":"2026-11-18T06:32:51.362549795Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_holdoff_test","accepted":1,"duplicates_skipped":0}
+2026-11-18T06:32:51.4836640Z {"time":"2026-11-18T06:32:51.483459579Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_holdoff_test"}
+2026-11-18T06:32:51.4837386Z --- PASS: TestCurfewHoldoffNoBusySpinAndCleanShutdown (0.12s)
+2026-11-18T06:32:51.4840273Z === RUN   TestIdempotentLeadIngestionDeduplication
+2026-11-18T06:32:51.4841224Z {"time":"2026-11-18T06:32:51.483738039Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_idempotent_test","accepted":2,"duplicates_skipped":2}
+2026-11-18T06:32:51.4841841Z --- PASS: TestIdempotentLeadIngestionDeduplication (0.00s)
+2026-11-18T06:32:51.4842150Z === RUN   TestDeadLetterQueueRouting
+2026-11-18T06:32:51.4842659Z {"time":"2026-11-18T06:32:51.483872327Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_dlq_test","accepted":2,"duplicates_skipped":0}
+2026-11-18T06:32:51.5345283Z {"time":"2026-11-18T06:32:51.534297608Z","level":"WARN","msg":"dial_routed_to_dlq_dnc","lead_id":"lead_dnc_fail","phone":"2125550099"}
+2026-11-18T06:32:51.5466719Z {"time":"2026-11-18T06:32:51.546489225Z","level":"WARN","msg":"lead_routed_to_dlq_exhausted","lead_id":"lead_exhaust_fail","attempts":1}
+2026-11-18T06:32:51.6352188Z {"time":"2026-11-18T06:32:51.634942018Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_dlq_test"}
+2026-11-18T06:32:51.6352843Z --- PASS: TestDeadLetterQueueRouting (0.15s)
+2026-11-18T06:32:51.6356960Z === RUN   TestMultiCampaignConcurrencyIsolation
+2026-11-18T06:32:51.6358080Z {"time":"2026-11-18T06:32:51.635284772Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_A","accepted":2,"duplicates_skipped":0}
+2026-11-18T06:32:51.6359336Z {"time":"2026-11-18T06:32:51.635382876Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_B","accepted":2,"duplicates_skipped":0}
+2026-11-18T06:32:51.6360552Z {"time":"2026-11-18T06:32:51.635419761Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_C","accepted":2,"duplicates_skipped":0}
+2026-11-18T06:32:51.6361719Z {"time":"2026-11-18T06:32:51.635454702Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_D","accepted":2,"duplicates_skipped":0}
+2026-11-18T06:32:51.6362847Z {"time":"2026-11-18T06:32:51.635486679Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_E","accepted":2,"duplicates_skipped":0}
+2026-11-18T06:32:51.6967469Z {"time":"2026-11-18T06:32:51.696506337Z","level":"INFO","msg":"call_connected","lead_id":"lead_4fba593b","campaign_id":"camp_concurrent_A"}
+2026-11-18T06:32:51.6968263Z {"time":"2026-11-18T06:32:51.696505951Z","level":"INFO","msg":"lead_retry_scheduled","lead_id":"lead_6eae8226","attempt":1,"retry_at":"2026-11-18T06:49:02.007245195Z"}
+2026-11-18T06:32:51.6977295Z {"time":"2026-11-18T06:32:51.697597918Z","level":"INFO","msg":"call_connected","lead_id":"lead_27d07a9b","campaign_id":"camp_concurrent_E"}
+2026-11-18T06:32:51.6978120Z {"time":"2026-11-18T06:32:51.69759163Z","level":"INFO","msg":"call_connected","lead_id":"lead_f306294a","campaign_id":"camp_concurrent_E"}
+2026-11-18T06:32:51.7029133Z {"time":"2026-11-18T06:32:51.702748564Z","level":"INFO","msg":"lead_retry_scheduled","lead_id":"lead_7c271a9c","attempt":1,"retry_at":"2026-11-18T06:48:53.143766557Z"}
+2026-11-18T06:32:51.7039582Z {"time":"2026-11-18T06:32:51.703819095Z","level":"INFO","msg":"call_connected","lead_id":"lead_dceff522","campaign_id":"camp_concurrent_C"}
+2026-11-18T06:32:51.7040315Z {"time":"2026-11-18T06:32:51.703835854Z","level":"INFO","msg":"lead_retry_scheduled","lead_id":"lead_b7380e73","attempt":1,"retry_at":"2026-11-18T06:49:02.506904969Z"}
+2026-11-18T06:32:51.7091075Z {"time":"2026-11-18T06:32:51.708976835Z","level":"INFO","msg":"call_connected","lead_id":"lead_81a9f478","campaign_id":"camp_concurrent_D"}
+2026-11-18T06:32:51.7102052Z {"time":"2026-11-18T06:32:51.710064551Z","level":"INFO","msg":"call_connected","lead_id":"lead_5275314d","campaign_id":"camp_concurrent_A"}
+2026-11-18T06:32:51.7112636Z {"time":"2026-11-18T06:32:51.71114107Z","level":"INFO","msg":"lead_retry_scheduled","lead_id":"lead_d1b01842","attempt":1,"retry_at":"2026-11-18T06:48:05.277114661Z"}
+2026-11-18T06:32:51.7366889Z {"time":"2026-11-18T06:32:51.736508599Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_A"}
+2026-11-18T06:32:51.7367794Z {"time":"2026-11-18T06:32:51.736547226Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_B"}
+2026-11-18T06:32:51.7368734Z {"time":"2026-11-18T06:32:51.736579403Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_C"}
+2026-11-18T06:32:51.7370097Z {"time":"2026-11-18T06:32:51.736627564Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_D"}
+2026-11-18T06:32:51.7370629Z {"time":"2026-11-18T06:32:51.73667218Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_E"}
+2026-11-18T06:32:51.7371057Z --- PASS: TestMultiCampaignConcurrencyIsolation (0.10s)
+2026-11-18T06:32:51.7371354Z === RUN   TestBusyCallRetryBackoff
+2026-11-18T06:32:51.7371877Z {"time":"2026-11-18T06:32:51.73686976Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_retry_test","accepted":1,"duplicates_skipped":0}
+2026-11-18T06:32:51.7983696Z {"time":"2026-11-18T06:32:51.798083349Z","level":"INFO","msg":"lead_retry_scheduled","lead_id":"lead_busy_retry","attempt":1,"retry_at":"2026-11-18T06:48:08.136667537Z"}
+2026-11-18T06:32:51.8577224Z {"time":"2026-11-18T06:32:51.857449138Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_retry_test"}
+2026-11-18T06:32:51.8578163Z --- PASS: TestBusyCallRetryBackoff (0.12s)
+2026-11-18T06:32:51.8578612Z === RUN   TestStoragePersistenceAndIdempotency
+2026-11-18T06:32:51.8579096Z --- PASS: TestStoragePersistenceAndIdempotency (0.00s)
+2026-11-18T06:32:51.8579538Z === RUN   TestInFlightDialLimiting
+2026-11-18T06:32:51.8580663Z {"time":"2026-11-18T06:32:51.857955063Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_inflight_test","accepted":11,"duplicates_skipped":9}
+2026-11-18T06:32:51.9785429Z {"time":"2026-11-18T06:32:51.978330055Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_inflight_test"}
+2026-11-18T06:32:51.9785968Z --- PASS: TestInFlightDialLimiting (0.12s)
+2026-11-18T06:32:51.9786357Z === RUN   TestPacerSingleOutcomeAccounting
+2026-11-18T06:32:51.9787526Z {"time":"2026-11-18T06:32:51.978659991Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_accounting_test","accepted":3,"duplicates_skipped":0}
+2026-11-18T06:32:52.0510934Z {"time":"2026-11-18T06:32:52.050851818Z","level":"INFO","msg":"call_connected","lead_id":"lead_73b5dbc5","campaign_id":"camp_accounting_test"}
+2026-11-18T06:32:52.0520544Z {"time":"2026-11-18T06:32:52.051927166Z","level":"WARN","msg":"call_abandoned","lead_id":"lead_9c8c5dc0","campaign_id":"camp_accounting_test"}
+2026-11-18T06:32:52.0541748Z {"time":"2026-11-18T06:32:52.05406627Z","level":"WARN","msg":"call_abandoned","lead_id":"lead_1e889846","campaign_id":"camp_accounting_test"}
+2026-11-18T06:32:52.1298073Z {"time":"2026-11-18T06:32:52.129557263Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_accounting_test"}
+2026-11-18T06:32:52.1298839Z --- PASS: TestPacerSingleOutcomeAccounting (0.15s)
+2026-11-18T06:32:52.1299362Z === RUN   TestSynchronousIngestRejectsOnStorageFailure
+2026-11-18T06:32:52.1300632Z {"time":"2026-11-18T06:32:52.129925615Z","level":"ERROR","msg":"lead_ingest_db_failed","campaign_id":"camp_fail_test","error":"simulated postgres connection failure / deadlock"}
+2026-11-18T06:32:52.1301678Z --- PASS: TestSynchronousIngestRejectsOnStorageFailure (0.00s)
+2026-11-18T06:32:52.1312448Z === RUN   TestDatabaseDuplicateRejectedAfterRestart
+2026-11-18T06:32:52.1313679Z {"time":"2026-11-18T06:32:52.130165408Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_restart_idempotency","accepted":1,"duplicates_skipped":0}
+2026-11-18T06:32:52.1314795Z {"time":"2026-11-18T06:32:52.13026176Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_restart_idempotency","accepted":0,"duplicates_skipped":1}
+2026-11-18T06:32:52.1315406Z --- PASS: TestDatabaseDuplicateRejectedAfterRestart (0.00s)
+2026-11-18T06:32:52.1315750Z === RUN   TestLivePostgresRestartIdempotency
+2026-11-18T06:32:52.1523727Z {"time":"2026-11-18T06:32:52.152190898Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:52.1571037Z {"time":"2026-11-18T06:32:52.156919699Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_live_pg_138cde32","accepted":1,"duplicates_skipped":0}
+2026-11-18T06:32:52.1613957Z {"time":"2026-11-18T06:32:52.157518526Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_live_pg_138cde32","accepted":0,"duplicates_skipped":1}
+2026-11-18T06:32:52.1614922Z --- PASS: TestLivePostgresRestartIdempotency (0.03s)
+2026-11-18T06:32:52.1615355Z === RUN   TestDistributedCompetingWorkersClaiming
+2026-11-18T06:32:52.1649226Z --- PASS: TestDistributedCompetingWorkersClaiming (0.01s)
+2026-11-18T06:32:52.1650005Z === RUN   TestServerStartupCampaignRecovery
+2026-11-18T06:32:52.1650696Z --- PASS: TestServerStartupCampaignRecovery (0.00s)
+2026-11-18T06:32:52.1651220Z === RUN   TestAtomicTransactionalOutcomePersistence
+2026-11-18T06:32:52.1651742Z --- PASS: TestAtomicTransactionalOutcomePersistence (0.00s)
+2026-11-18T06:32:52.1652119Z === RUN   TestTickDistributedClaimingIntegration
+2026-11-18T06:32:52.2323887Z {"time":"2026-11-18T06:32:52.232138337Z","level":"WARN","msg":"lead_routed_to_dlq_exhausted","lead_id":"tick_lead_2","attempts":1}
+2026-11-18T06:32:52.2333583Z {"time":"2026-11-18T06:32:52.233228928Z","level":"WARN","msg":"lead_routed_to_dlq_exhausted","lead_id":"tick_lead_1","attempts":1}
+2026-11-18T06:32:52.3159209Z {"time":"2026-11-18T06:32:52.31565182Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_tick_claim_test"}
+2026-11-18T06:32:52.3159765Z --- PASS: TestTickDistributedClaimingIntegration (0.15s)
+2026-11-18T06:32:52.3160187Z === RUN   TestLivePostgresDistributedClaimingAndLeaseRecovery
+2026-11-18T06:32:52.3388612Z {"time":"2026-11-18T06:32:52.338692414Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:52.3782630Z --- PASS: TestLivePostgresDistributedClaimingAndLeaseRecovery (0.06s)
+2026-11-18T06:32:52.3784720Z === RUN   TestLivePostgresCompetingEnginesSchedulerDispatch
+2026-11-18T06:32:52.3967890Z {"time":"2026-11-18T06:32:52.395277435Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:52.5024777Z {"time":"2026-11-18T06:32:52.502258616Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_21","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.5055790Z {"time":"2026-11-18T06:32:52.505398638Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_20","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.5118993Z {"time":"2026-11-18T06:32:52.511784915Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_23","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.5170680Z {"time":"2026-11-18T06:32:52.51692718Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_19","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.5181429Z {"time":"2026-11-18T06:32:52.518007135Z","level":"WARN","msg":"call_abandoned","lead_id":"live_eng_22","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.5234021Z {"time":"2026-11-18T06:32:52.523228561Z","level":"WARN","msg":"call_abandoned","lead_id":"live_eng_18","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.6424357Z {"time":"2026-11-18T06:32:52.642174822Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_14","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.6425271Z {"time":"2026-11-18T06:32:52.642205282Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_17","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.6426089Z {"time":"2026-11-18T06:32:52.64219366Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_15","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.6426903Z {"time":"2026-11-18T06:32:52.642180811Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_16","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.7379058Z {"time":"2026-11-18T06:32:52.737696433Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_12","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.7379851Z {"time":"2026-11-18T06:32:52.737690414Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_13","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.7409772Z {"time":"2026-11-18T06:32:52.74084974Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_10","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.7410701Z {"time":"2026-11-18T06:32:52.74086645Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_11","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.8445095Z {"time":"2026-11-18T06:32:52.844225338Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_09","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.8445894Z {"time":"2026-11-18T06:32:52.844241406Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_08","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.8446608Z {"time":"2026-11-18T06:32:52.844257435Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_06","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.8447574Z {"time":"2026-11-18T06:32:52.844266668Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_07","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.9390810Z {"time":"2026-11-18T06:32:52.938808047Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_05","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.9400065Z {"time":"2026-11-18T06:32:52.939877161Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_04","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.9410869Z {"time":"2026-11-18T06:32:52.940958493Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_03","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:52.9411782Z {"time":"2026-11-18T06:32:52.940971933Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_02","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:53.0378357Z {"time":"2026-11-18T06:32:53.037576037Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_00","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:53.0379115Z {"time":"2026-11-18T06:32:53.037566718Z","level":"INFO","msg":"call_connected","lead_id":"live_eng_01","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:53.1162148Z {"time":"2026-11-18T06:32:53.115980539Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:53.1163326Z {"time":"2026-11-18T06:32:53.11604211Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_engine_compete_626ed3d1"}
+2026-11-18T06:32:53.1172124Z --- PASS: TestLivePostgresCompetingEnginesSchedulerDispatch (0.74s)
+2026-11-18T06:32:53.1173681Z === RUN   TestLivePostgresDNCPersistenceAndCrossInstanceScreening
+2026-11-18T06:32:53.1390231Z {"time":"2026-11-18T06:32:53.138871328Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:53.2053919Z {"time":"2026-11-18T06:32:53.205150565Z","level":"WARN","msg":"dial_routed_to_dlq_dnc","lead_id":"lead_dnc_cross","phone":"8005556788"}
+2026-11-18T06:32:53.2551447Z {"time":"2026-11-18T06:32:53.254931424Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_dnc_cross_47a106be"}
+2026-11-18T06:32:53.2574447Z --- PASS: TestLivePostgresDNCPersistenceAndCrossInstanceScreening (0.14s)
+2026-11-18T06:32:53.2585598Z === RUN   TestLivePostgresDurableAttemptStartPersistenceCrashSafety
+2026-11-18T06:32:53.2818041Z {"time":"2026-11-18T06:32:53.281626377Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:53.2962395Z --- PASS: TestLivePostgresDurableAttemptStartPersistenceCrashSafety (0.04s)
+2026-11-18T06:32:53.2976190Z === RUN   TestAttemptStartFailureAbortsCarrierDial
+2026-11-18T06:32:53.3481073Z {"time":"2026-11-18T06:32:53.347874764Z","level":"ERROR","msg":"failed_recording_attempt_start_aborting_dial","lead_id":"lead_abort_1","attempt_id":"3a827586-d0f3-485e-b0a7-352507f53618","error":"simulated postgres connection deadlock on attempt start"}
+2026-11-18T06:32:53.4485894Z {"time":"2026-11-18T06:32:53.448292908Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_abort_dial"}
+2026-11-18T06:32:53.4486722Z --- PASS: TestAttemptStartFailureAbortsCarrierDial (0.15s)
+2026-11-18T06:32:53.4487218Z === RUN   TestDNCFailClosedOnDatabaseError
+2026-11-18T06:32:53.4991666Z {"time":"2026-11-18T06:32:53.498915922Z","level":"ERROR","msg":"dnc_check_failed_deferring_lead_fail_closed","lead_id":"lead_fail_closed_1","phone":"+14155558888","error":"simulated postgres timeout during dnc check"}
+2026-11-18T06:32:53.5999240Z {"time":"2026-11-18T06:32:53.59933339Z","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_fail_closed_dnc"}
+2026-11-18T06:32:53.5999746Z --- PASS: TestDNCFailClosedOnDatabaseError (0.15s)
+2026-11-18T06:32:53.6000062Z === RUN   TestTimezoneCurfewPersistentReschedule
+2026-11-18T06:32:53.6000813Z --- PASS: TestTimezoneCurfewPersistentReschedule (0.00s)
+2026-11-18T06:32:53.6001331Z === RUN   TestAttemptCountingExactnessAndConsistency
+2026-11-18T06:32:53.6002608Z --- PASS: TestAttemptCountingExactnessAndConsistency (0.00s)
+2026-11-18T06:32:53.6003287Z === RUN   TestDNCPersistenceAcrossRestart
+2026-11-18T06:32:53.6006039Z --- PASS: TestDNCPersistenceAcrossRestart (0.00s)
+2026-11-18T06:32:53.6006587Z === RUN   TestRecordAttemptStartAffectedRowsValidation
+2026-11-18T06:32:53.6009925Z --- PASS: TestRecordAttemptStartAffectedRowsValidation (0.00s)
+2026-11-18T06:32:53.6010741Z === RUN   TestLivePostgresRecordAttemptStartAffectedRowsValidation
+2026-11-18T06:32:53.6188356Z {"time":"2026-11-18T06:32:53.618686771Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:53.6320961Z --- PASS: TestLivePostgresRecordAttemptStartAffectedRowsValidation (0.03s)
+2026-11-18T06:32:53.6325892Z === RUN   TestLivePostgresDistributedLeaseFencingStaleWorkerRejected
+2026-11-18T06:32:53.6519910Z {"time":"2026-11-18T06:32:53.651812989Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:53.6687657Z --- PASS: TestLivePostgresDistributedLeaseFencingStaleWorkerRejected (0.04s)
+2026-11-18T06:32:53.6689487Z === RUN   TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease
+2026-11-18T06:32:53.6795368Z {"time":"2026-11-18T06:32:53.679220481Z","level":"WARN","msg":"stale_lease_detected_abandoning_local_lead","lead_id":"lead_queue_fencing_mem","attempt_id":"1d1cb49e-5133-4837-b1dd-c9ca8d80bff5","lease_token":"0538dbb6-f735-4d6f-8599-8cbff6d2dad9","error":"record_attempt_start: lease token mismatch for lead lead_queue_fencing_mem: current=a527612e-9dad-4e84-8d13-8564a07215c9, given=0538dbb6-f735-4d6f-8599-8cbff6d2dad9"}
+2026-11-18T06:32:53.6796856Z {"time":"2026-11-18T06:32:53.679344643Z","level":"INFO","msg":"call_connected","lead_id":"lead_queue_fencing_mem","campaign_id":"camp_queue_fencing_mem"}
+2026-11-18T06:32:53.7231038Z --- PASS: TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease (0.05s)
+2026-11-18T06:32:53.7231572Z === RUN   TestLivePostgresRescheduleLeadFencing
+2026-11-18T06:32:53.7417925Z {"time":"2026-11-18T06:32:53.741604894Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:53.7546086Z --- PASS: TestLivePostgresRescheduleLeadFencing (0.03s)
+2026-11-18T06:32:53.7548614Z === RUN   TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease
+2026-11-18T06:32:53.7711264Z {"time":"2026-11-18T06:32:53.77097433Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:53.7845244Z {"time":"2026-11-18T06:32:53.784220796Z","level":"WARN","msg":"stale_lease_detected_abandoning_local_lead","lead_id":"lead_queue_live_a536f2fa","attempt_id":"d9bc1858-fd96-412c-a544-5be0444021ad","lease_token":"5d702a43-74c9-4ff6-8238-5308b9e2ae5b","error":"stale lease token or invalid lead state: outcome rejected: record_attempt_start: expected 1 row updated for lead lead_queue_live_a536f2fa in DIALING status with active lease, got 0"}
+2026-11-18T06:32:53.7877454Z {"time":"2026-11-18T06:32:53.787601693Z","level":"INFO","msg":"call_connected","lead_id":"lead_queue_live_a536f2fa","campaign_id":"camp_queue_live_1b5b0197"}
+2026-11-18T06:32:53.8400319Z --- PASS: TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease (0.09s)
+2026-11-18T06:32:53.8423523Z === RUN   TestMemoryAttemptStartFailsOnExpiredLeaseBeforeReclamation
+2026-11-18T06:32:53.8424658Z --- PASS: TestMemoryAttemptStartFailsOnExpiredLeaseBeforeReclamation (0.00s)
+2026-11-18T06:32:53.8425558Z === RUN   TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation
+2026-11-18T06:32:53.8544705Z {"time":"2026-11-18T06:32:53.854291895Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:53.8723956Z --- PASS: TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation (0.03s)
+2026-11-18T06:32:53.8730219Z === RUN   TestLivePostgresAttemptStartLockWaitExpiryRejection
+2026-11-18T06:32:53.8838333Z {"time":"2026-11-18T06:32:53.883630486Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:55.4083490Z --- PASS: TestLivePostgresAttemptStartLockWaitExpiryRejection (1.53s)
+2026-11-18T06:32:55.4084998Z === RUN   TestTCPACurfewTableDriven
+2026-11-18T06:32:55.4085801Z === RUN   TestTCPACurfewTableDriven/Arizona_602_summer_morning_dangerous_direction_(07:30_Phoenix)
+2026-11-18T06:32:55.4086641Z === RUN   TestTCPACurfewTableDriven/Arizona_480_summer_morning_dangerous_direction_(07:30_Phoenix)
+2026-11-18T06:32:55.4087197Z === RUN   TestTCPACurfewTableDriven/Arizona_623_summer_morning_dangerous_direction_(07:30_Phoenix)
+2026-11-18T06:32:55.4088219Z === RUN   TestTCPACurfewTableDriven/Arizona_928_summer_morning_dangerous_direction_(07:30_Phoenix)
+2026-11-18T06:32:55.4089162Z === RUN   TestTCPACurfewTableDriven/Arizona_602_summer_evening_allowed_(20:30_Phoenix_vs_21:30_Denver)
+2026-11-18T06:32:55.4090109Z === RUN   TestTCPACurfewTableDriven/Arizona_928_summer_evening_prohibited_in_Navajo_Nation_(21:30_Navajo_vs_20:30_Phoenix)
+2026-11-18T06:32:55.4091477Z === RUN   TestTCPACurfewTableDriven/Arizona_928_summer_evening_allowed_in_both_zones_(20:30_Navajo_and_19:30_Phoenix)
+2026-11-18T06:32:55.4092497Z === RUN   TestTCPACurfewTableDriven/Arizona_928_summer_morning_allowed_in_both_zones_(09:30_Navajo_and_08:30_Phoenix)
+2026-11-18T06:32:55.4093533Z === RUN   TestTCPACurfewTableDriven/Unknown_area_code_999_fails_closed
+2026-11-18T06:32:55.4094265Z === RUN   TestTCPACurfewTableDriven/Unknown_area_code_000_fails_closed
+2026-11-18T06:32:55.4094889Z === RUN   TestTCPACurfewTableDriven/El_Paso_915_morning_allowed_(08:30_MDT)
+2026-11-18T06:32:55.4095580Z === RUN   TestTCPACurfewTableDriven/El_Paso_915_early_morning_prohibited_(07:30_MDT)
+2026-11-18T06:32:55.4096374Z === RUN   TestTCPACurfewTableDriven/NY_212_standard_time_before_spring_forward_(07:00_EST)
+2026-11-18T06:32:55.4097164Z === RUN   TestTCPACurfewTableDriven/NY_212_daylight_saving_time_after_spring_forward_(08:00_EDT)
+2026-11-18T06:32:55.4097962Z === RUN   TestTCPACurfewTableDriven/NY_212_daylight_saving_time_before_fall_back_(08:00_EDT)
+2026-11-18T06:32:55.4098623Z === RUN   TestTCPACurfewTableDriven/NY_212_standard_time_after_fall_back_(07:00_EST)
+2026-11-18T06:32:55.4098990Z --- PASS: TestTCPACurfewTableDriven (0.00s)
+2026-11-18T06:32:55.4099529Z     --- PASS: TestTCPACurfewTableDriven/Arizona_602_summer_morning_dangerous_direction_(07:30_Phoenix) (0.00s)
+2026-11-18T06:32:55.4100183Z     --- PASS: TestTCPACurfewTableDriven/Arizona_480_summer_morning_dangerous_direction_(07:30_Phoenix) (0.00s)
+2026-11-18T06:32:55.4100820Z     --- PASS: TestTCPACurfewTableDriven/Arizona_623_summer_morning_dangerous_direction_(07:30_Phoenix) (0.00s)
+2026-11-18T06:32:55.4101453Z     --- PASS: TestTCPACurfewTableDriven/Arizona_928_summer_morning_dangerous_direction_(07:30_Phoenix) (0.00s)
+2026-11-18T06:32:55.4102109Z     --- PASS: TestTCPACurfewTableDriven/Arizona_602_summer_evening_allowed_(20:30_Phoenix_vs_21:30_Denver) (0.00s)
+2026-11-18T06:32:55.4102828Z     --- PASS: TestTCPACurfewTableDriven/Arizona_928_summer_evening_prohibited_in_Navajo_Nation_(21:30_Navajo_vs_20:30_Phoenix) (0.00s)
+2026-11-18T06:32:55.4104092Z     --- PASS: TestTCPACurfewTableDriven/Arizona_928_summer_evening_allowed_in_both_zones_(20:30_Navajo_and_19:30_Phoenix) (0.00s)
+2026-11-18T06:32:55.4104980Z     --- PASS: TestTCPACurfewTableDriven/Arizona_928_summer_morning_allowed_in_both_zones_(09:30_Navajo_and_08:30_Phoenix) (0.00s)
+2026-11-18T06:32:55.4105573Z     --- PASS: TestTCPACurfewTableDriven/Unknown_area_code_999_fails_closed (0.00s)
+2026-11-18T06:32:55.4106043Z     --- PASS: TestTCPACurfewTableDriven/Unknown_area_code_000_fails_closed (0.00s)
+2026-11-18T06:32:55.4106529Z     --- PASS: TestTCPACurfewTableDriven/El_Paso_915_morning_allowed_(08:30_MDT) (0.00s)
+2026-11-18T06:32:55.4107067Z     --- PASS: TestTCPACurfewTableDriven/El_Paso_915_early_morning_prohibited_(07:30_MDT) (0.00s)
+2026-11-18T06:32:55.4107635Z     --- PASS: TestTCPACurfewTableDriven/NY_212_standard_time_before_spring_forward_(07:00_EST) (0.00s)
+2026-11-18T06:32:55.4108228Z     --- PASS: TestTCPACurfewTableDriven/NY_212_daylight_saving_time_after_spring_forward_(08:00_EDT) (0.00s)
+2026-11-18T06:32:55.4109019Z     --- PASS: TestTCPACurfewTableDriven/NY_212_daylight_saving_time_before_fall_back_(08:00_EDT) (0.00s)
+2026-11-18T06:32:55.4109698Z     --- PASS: TestTCPACurfewTableDriven/NY_212_standard_time_after_fall_back_(07:00_EST) (0.00s)
+2026-11-18T06:32:55.4110083Z === RUN   TestQueueHandlesUnknownAreaCodeDLQ
+2026-11-18T06:32:55.4110625Z {"time":"2026-11-18T06:32:55.406920077Z","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_unknown_tz_test","accepted":1,"duplicates_skipped":0}
+2026-11-18T06:32:55.4111371Z {"time":"2026-11-18T06:32:55.406988808Z","level":"WARN","msg":"dial_routed_to_dlq_unknown_timezone","lead_id":"lead_unknown_tz_1","phone":"9995550199"}
+2026-11-18T06:32:55.4111877Z --- PASS: TestQueueHandlesUnknownAreaCodeDLQ (0.00s)
+2026-11-18T06:32:55.4112295Z === RUN   TestLivePostgresConcurrentWorkersNeverClaimSameLead
+2026-11-18T06:32:55.4208356Z {"time":"2026-11-18T06:32:55.420684701Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:55.5123373Z --- PASS: TestLivePostgresConcurrentWorkersNeverClaimSameLead (0.10s)
+2026-11-18T06:32:55.5124053Z === RUN   TestLivePostgresStaleWorkerOutcomeRejection
+2026-11-18T06:32:55.5346401Z {"time":"2026-11-18T06:32:55.534440045Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:55.5363469Z === RUN   TestLivePostgresStaleWorkerOutcomeRejection/ExpiredNotReassigned
+2026-11-18T06:32:55.5461532Z === RUN   TestLivePostgresStaleWorkerOutcomeRejection/ReassignedToAnotherWorker
+2026-11-18T06:32:55.5498365Z === RUN   TestLivePostgresStaleWorkerOutcomeRejection/LockWaitRace
+2026-11-18T06:32:57.0604338Z --- PASS: TestLivePostgresStaleWorkerOutcomeRejection (1.55s)
+2026-11-18T06:32:57.0605417Z     --- PASS: TestLivePostgresStaleWorkerOutcomeRejection/ExpiredNotReassigned (0.01s)
+2026-11-18T06:32:57.0606670Z     --- PASS: TestLivePostgresStaleWorkerOutcomeRejection/ReassignedToAnotherWorker (0.00s)
+2026-11-18T06:32:57.0607865Z     --- PASS: TestLivePostgresStaleWorkerOutcomeRejection/LockWaitRace (1.51s)
+2026-11-18T06:32:57.0609015Z === RUN   TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery
+2026-11-18T06:32:57.0777840Z {"time":"2026-11-18T06:32:57.077570294Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:57.1020532Z --- PASS: TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery (0.04s)
+2026-11-18T06:32:57.1021759Z === RUN   TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect
+2026-11-18T06:32:57.1215517Z {"time":"2026-11-18T06:32:57.121364596Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:57.1321453Z --- PASS: TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect (0.03s)
+2026-11-18T06:32:57.1322412Z === RUN   TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect
+2026-11-18T06:32:57.1554034Z {"time":"2026-11-18T06:32:57.15521624Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:58.3677600Z --- PASS: TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect (1.24s)
+2026-11-18T06:32:58.3678469Z === RUN   TestPoisonMessageReachesDLQAfterMaxDeliveries
+2026-11-18T06:32:58.3892155Z {"time":"2026-11-18T06:32:58.38902059Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:58.4622772Z --- PASS: TestPoisonMessageReachesDLQAfterMaxDeliveries (0.09s)
+2026-11-18T06:32:58.4623785Z === RUN   TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID
+2026-11-18T06:32:58.4850299Z {"time":"2026-11-18T06:32:58.484881691Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:58.4946505Z --- PASS: TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID (0.03s)
+2026-11-18T06:32:58.4947583Z === RUN   TestConcurrentRelaysSkipLockedNoDuplicatePublish
+2026-11-18T06:32:58.5131200Z {"time":"2026-11-18T06:32:58.512920237Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:58.7267025Z --- PASS: TestConcurrentRelaysSkipLockedNoDuplicatePublish (0.23s)
+2026-11-18T06:32:58.7267956Z === RUN   TestOutboxLagMetricKeepsGrowingWhenRelayStopped
+2026-11-18T06:32:58.7454405Z {"time":"2026-11-18T06:32:58.745276668Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:59.0052956Z --- PASS: TestOutboxLagMetricKeepsGrowingWhenRelayStopped (0.28s)
+2026-11-18T06:32:59.0053612Z === RUN   TestRelayBatchesDoNotBlockEachOther
+2026-11-18T06:32:59.0246315Z {"time":"2026-11-18T06:32:59.024434359Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:59.0443807Z --- PASS: TestRelayBatchesDoNotBlockEachOther (0.04s)
+2026-11-18T06:32:59.0446598Z === RUN   TestPurgePublishedOutboxEvents
+2026-11-18T06:32:59.0620818Z {"time":"2026-11-18T06:32:59.061861746Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:59.0721903Z --- PASS: TestPurgePublishedOutboxEvents (0.03s)
+2026-11-18T06:32:59.0722531Z === RUN   TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ
+2026-11-18T06:32:59.0875378Z {"time":"2026-11-18T06:32:59.087366627Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:59.4616059Z --- PASS: TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ (0.39s)
+2026-11-18T06:32:59.4617462Z === RUN   TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry
+2026-11-18T06:32:59.4879300Z {"time":"2026-11-18T06:32:59.487755266Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+2026-11-18T06:32:59.7971951Z --- PASS: TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry (0.34s)
+2026-11-18T06:32:59.7972429Z PASS
+2026-11-18T06:33:00.8010437Z ok  	github.com/yoohooshantanu/dialpulse/tests	9.676s
+2026-11-18T06:33:00.9002917Z ##[group]Run go build -v -o bin/dialpulse ./cmd/server
+2026-11-18T06:33:00.9003612Z [36;1mgo build -v -o bin/dialpulse ./cmd/server[0m
+2026-11-18T06:33:00.9004042Z [36;1mgo build -v -o bin/loadgen ./cmd/loadgen[0m
+2026-11-18T06:33:00.9054841Z shell: /usr/bin/bash -e {0}
+2026-11-18T06:33:00.9055065Z ##[endgroup]
+2026-11-18T06:33:01.0876746Z github.com/yoohooshantanu/dialpulse/internal/storage
+2026-11-18T06:33:01.2061128Z github.com/yoohooshantanu/dialpulse/internal/queue
+2026-11-18T06:33:01.3358484Z github.com/yoohooshantanu/dialpulse/cmd/server
+2026-11-18T06:33:01.8939217Z github.com/yoohooshantanu/dialpulse/cmd/loadgen
+2026-11-18T06:33:02.4445711Z Post job cleanup.
+2026-11-18T06:33:02.5446354Z (node:3505) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-18T06:33:02.5446960Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-18T06:33:02.5498187Z [command]/opt/hostedtoolcache/go/1.23.12/x64/bin/go env GOMODCACHE
+2026-11-18T06:33:02.5541506Z [command]/opt/hostedtoolcache/go/1.23.12/x64/bin/go env GOCACHE
+2026-11-18T06:33:02.5575825Z /home/runner/go/pkg/mod
+2026-11-18T06:33:02.5604379Z /home/runner/.cache/go-build
+2026-11-18T06:33:02.5613809Z Cache hit occurred on the primary key setup-go-Linux-x64-ubuntu26-go-1.23.12-ab6b5b857451125d580c73518ca7fadc9a30b9285d20cf72e22549e002e1a3ad, not saving cache.
+2026-11-18T06:33:02.5802703Z Post job cleanup.
+2026-11-18T06:33:02.6503743Z [command]/usr/bin/git version
+2026-11-18T06:33:02.6531201Z git version 2.56.1
+2026-11-18T06:33:02.6560688Z Temporarily overriding HOME='/home/runner/work/_temp/6b487464-abc0-4d8f-9d81-4f93a7aa5f74' before making global git config changes
+2026-11-18T06:33:02.6561799Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-18T06:33:02.6566166Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dialpulse/dialpulse
+2026-11-18T06:33:02.6916936Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-18T06:33:02.6961241Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-18T06:33:02.7238109Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-18T06:33:02.7260727Z http.https://github.com/.extraheader
+2026-11-18T06:33:02.7269396Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-11-18T06:33:02.7311907Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-18T06:33:02.7550459Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-18T06:33:02.7594238Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-18T06:33:02.7932040Z Print service container logs: fe4583f525d94eeea2457b1ff2255436_postgres16alpine_e5fc7f
+2026-11-18T06:33:02.7936237Z ##[command]/usr/bin/docker logs --details 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:33:02.8060541Z  sh: locale: not found
+2026-11-18T06:33:02.8061237Z  2026-11-18 06:32:17.266 UTC [35] WARNING:  no usable system locales were found
+2026-11-18T06:33:02.8062045Z  The files belonging to this database system will be owned by user "postgres".
+2026-11-18T06:33:02.8062547Z  This user must also own the server process.
+2026-11-18T06:33:02.8062772Z  
+2026-11-18T06:33:02.8063009Z  The database cluster will be initialized with locale "en_US.utf8".
+2026-11-18T06:33:02.8063548Z  The default database encoding has accordingly been set to "UTF8".
+2026-11-18T06:33:02.8063893Z  The default text search configuration will be set to "english".
+2026-11-18T06:33:02.8064156Z  
+2026-11-18T06:33:02.8064330Z  Data page checksums are disabled.
+2026-11-18T06:33:02.8064583Z  
+2026-11-18T06:33:02.8064832Z  fixing permissions on existing directory /var/lib/postgresql/data ... ok
+2026-11-18T06:33:02.8065143Z  creating subdirectories ... ok
+2026-11-18T06:33:02.8065416Z  selecting dynamic shared memory implementation ... posix
+2026-11-18T06:33:02.8065721Z  selecting default max_connections ... 100
+2026-11-18T06:33:02.8065973Z  selecting default shared_buffers ... 128MB
+2026-11-18T06:33:02.8066212Z  selecting default time zone ... UTC
+2026-11-18T06:33:02.8066439Z  creating configuration files ... ok
+2026-11-18T06:33:02.8066655Z  running bootstrap script ... ok
+2026-11-18T06:33:02.8066904Z  performing post-bootstrap initialization ... ok
+2026-11-18T06:33:02.8067166Z  syncing data to disk ... ok
+2026-11-18T06:33:02.8067378Z  
+2026-11-18T06:33:02.8067522Z  
+2026-11-18T06:33:02.8067720Z  Success. You can now start the database server using:
+2026-11-18T06:33:02.8067965Z  
+2026-11-18T06:33:02.8068187Z      pg_ctl -D /var/lib/postgresql/data -l logfile start
+2026-11-18T06:33:02.8068438Z  
+2026-11-18T06:33:02.8068876Z  waiting for server to start....2026-11-18 06:32:18.011 UTC [41] LOG:  starting PostgreSQL 16.16 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-11-18T06:33:02.8069482Z  2026-11-18 06:32:18.011 UTC [41] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-11-18T06:33:02.8069941Z  2026-11-18 06:32:18.013 UTC [44] LOG:  database system was shut down at 2026-11-18 06:32:17 UTC
+2026-11-18T06:33:02.8070351Z  2026-11-18 06:32:18.017 UTC [41] LOG:  database system is ready to accept connections
+2026-11-18T06:33:02.8070641Z   done
+2026-11-18T06:33:02.8070835Z  server started
+2026-11-18T06:33:02.8071005Z  CREATE DATABASE
+2026-11-18T06:33:02.8071166Z  
+2026-11-18T06:33:02.8071310Z  
+2026-11-18T06:33:02.8071572Z  /usr/local/bin/docker-entrypoint.sh: ignoring /docker-entrypoint-initdb.d/*
+2026-11-18T06:33:02.8071877Z  
+2026-11-18T06:33:02.8072165Z  waiting for server to shut down....2026-11-18 06:32:18.165 UTC [41] LOG:  received fast shutdown request
+2026-11-18T06:33:02.8072571Z  2026-11-18 06:32:18.165 UTC [41] LOG:  aborting any active transactions
+2026-11-18T06:33:02.8073015Z  2026-11-18 06:32:18.167 UTC [41] LOG:  background worker "logical replication launcher" (PID 47) exited with exit code 1
+2026-11-18T06:33:02.8073748Z  2026-11-18 06:32:18.168 UTC [42] LOG:  shutting down
+2026-11-18T06:33:02.8074401Z  2026-11-18 06:32:18.168 UTC [42] LOG:  checkpoint starting: shutdown immediate
+2026-11-18T06:33:02.8075880Z  2026-11-18 06:32:18.249 UTC [42] LOG:  checkpoint complete: wrote 935 buffers (5.7%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.075 s, sync=0.005 s, total=0.082 s; sync files=301, longest=0.004 s, average=0.001 s; distance=4355 kB, estimate=4355 kB; lsn=0/1949CE0, redo lsn=0/1949CE0
+2026-11-18T06:33:02.8076906Z  2026-11-18 06:32:18.256 UTC [41] LOG:  database system is shut down
+2026-11-18T06:33:02.8077182Z   done
+2026-11-18T06:33:02.8077341Z  server stopped
+2026-11-18T06:33:02.8077505Z  
+2026-11-18T06:33:02.8077884Z  PostgreSQL init process complete; ready for start up.
+2026-11-18T06:33:02.8078141Z  
+2026-11-18T06:33:02.8078387Z  initdb: warning: enabling "trust" authentication for local connections
+2026-11-18T06:33:02.8078926Z  initdb: hint: You can change this by editing pg_hba.conf or using the option -A, or --auth-local and --auth-host, the next time you run initdb.
+2026-11-18T06:33:02.8079594Z  2026-11-18 06:32:18.283 UTC [1] LOG:  starting PostgreSQL 16.16 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-11-18T06:33:02.8080074Z  2026-11-18 06:32:18.283 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-11-18T06:33:02.8080444Z  2026-11-18 06:32:18.283 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-11-18T06:33:02.8080841Z  2026-11-18 06:32:18.284 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-11-18T06:33:02.8081265Z  2026-11-18 06:32:18.286 UTC [57] LOG:  database system was shut down at 2026-11-18 06:32:18 UTC
+2026-11-18T06:33:02.8081656Z  2026-11-18 06:32:18.289 UTC [1] LOG:  database system is ready to accept connections
+2026-11-18T06:33:02.8081994Z  2026-11-18 06:32:26.924 UTC [67] FATAL:  role "root" does not exist
+2026-11-18T06:33:02.8082287Z  2026-11-18 06:32:36.961 UTC [74] FATAL:  role "root" does not exist
+2026-11-18T06:33:02.8082589Z  2026-11-18 06:32:46.994 UTC [83] FATAL:  role "root" does not exist
+2026-11-18T06:33:02.8082916Z  2026-11-18 06:32:57.027 UTC [141] FATAL:  role "root" does not exist
+2026-11-18T06:33:02.8087477Z Stop and remove container: fe4583f525d94eeea2457b1ff2255436_postgres16alpine_e5fc7f
+2026-11-18T06:33:02.8091208Z ##[command]/usr/bin/docker rm --force 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:33:05.1777670Z 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
+2026-11-18T06:33:05.1805040Z Remove container network: github_network_badb95a4878c417882c4f760c43f91e6
+2026-11-18T06:33:05.1808876Z ##[command]/usr/bin/docker network rm github_network_badb95a4878c417882c4f760c43f91e6
+2026-11-18T06:33:05.2334863Z github_network_badb95a4878c417882c4f760c43f91e6
+2026-11-18T06:33:05.2402300Z Cleaning up orphan processes
+2026-11-18T06:33:05.2789561Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-go@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+

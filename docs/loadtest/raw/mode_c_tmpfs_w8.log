@@ -1,0 +1,35 @@
+﻿
+--- Run 1 of 3 (Scenario A, W=8, Leads=2000, Mode=partial) ---
+Seeded 2000 leads in 0.46s (4320 leads/s)
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=1993   dead=171    autovacuums=1
+    campaign_outcomes : live=0      dead=0      autovacuums=0
+    leads             : live=2000   dead=1789   autovacuums=1
+    outbox_events     : live=1970   dead=0      autovacuums=1
+    processed_events  : live=0      dead=0      autovacuums=0
+
+--- Run 2 of 3 (Scenario A, W=8, Leads=2000, Mode=partial) ---
+Seeded 2000 leads in 0.59s (3377 leads/s)
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=1988   dead=193    autovacuums=1
+    campaign_outcomes : live=0      dead=0      autovacuums=0
+    leads             : live=4000   dead=5894   autovacuums=1
+    outbox_events     : live=1990   dead=0      autovacuums=1
+    processed_events  : live=0      dead=0      autovacuums=0
+
+--- Run 3 of 3 (Scenario A, W=8, Leads=2000, Mode=partial) ---
+Seeded 2000 leads in 0.83s (2422 leads/s)
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=2022   dead=156    autovacuums=2
+    campaign_outcomes : live=0      dead=0      autovacuums=0
+    leads             : live=2000   dead=3371   autovacuums=2
+    outbox_events     : live=2022   dead=0      autovacuums=1
+    processed_events  : live=0      dead=0      autovacuums=0
+
+=======================================================================================================================================
+DIALPULSE BENCHMARK SUMMARY (Mode: partial) - Max Claim-and-Record Rate (No Dial Time)
+=======================================================================================================================================
+| Scen   | Mode    | W   | Throughput/s    | Tot p50 (ms)    | Tot p99 (ms)    | Claim p50 (ms)  | Record p50 (ms) | PG CPU%    | Cgroup CPU | Locks  | Retries  |
+|--------|---------|-----|-----------------|-----------------|-----------------|-----------------|-----------------|------------|------------|--------|----------|
+| A      | partial | 8   | [61.6 - 66.9]   | [98.5 - 107.2]  | [296.2 - 365.8] | [1.1 - 1.7]     | [97.2 - 103.8]  | [0.0% - 0.0%] | [1.4% - 9.7%] | [0 - 0] | [0 - 0]  |
+=======================================================================================================================================
