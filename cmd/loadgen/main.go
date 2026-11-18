@@ -254,49 +254,55 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 	fmt.Println("DATASET EXPERIMENT: 1,000,000 LEADS INDEX COMPARISON AT SCALE")
 	fmt.Println("=================================================================")
 
-	// Reset tables
-	resetTables(ctx, pool)
-	ensureCampaign(ctx, pool, cfg.CampaignID)
+	var queuedCount int
+	_ = pool.QueryRow(ctx, "SELECT count(*) FROM leads WHERE campaign_id = $1 AND status = 'QUEUED'", cfg.CampaignID).Scan(&queuedCount)
 
-	// Seed 1,000,000 leads
-	fmt.Println("Seeding 1,000,000 leads (batch size 10,000)...")
-	seedStart := time.Now()
-	totalLeads := 1000000
-	batchSize := 10000
-	cols := []string{"id", "campaign_id", "phone_number", "name", "priority", "status", "attempts", "max_attempts", "created_at"}
-	r := rand.New(rand.NewSource(42))
+	if queuedCount >= 500000 {
+		fmt.Printf("✔ Table already contains %d queued leads in campaign %s; skipping re-seeding.\n", queuedCount, cfg.CampaignID)
+	} else {
+		// Reset tables
+		resetTables(ctx, pool)
+		ensureCampaign(ctx, pool, cfg.CampaignID)
 
-	for inserted := 0; inserted < totalLeads; inserted += batchSize {
-		rows := make([][]interface{}, batchSize)
-		for i := 0; i < batchSize; i++ {
-			idx := inserted + i
-			rows[i] = []interface{}{
-				fmt.Sprintf("lead-1m-%07d", idx),
-				cfg.CampaignID,
-				fmt.Sprintf("+1800%07d", idx),
-				fmt.Sprintf("Lead 1M %d", idx),
-				r.Intn(10),
-				"QUEUED",
-				0,
-				3,
-				time.Now().UTC(),
+		// Seed 1,000,000 leads
+		fmt.Println("Seeding 1,000,000 leads (batch size 10,000)...")
+		seedStart := time.Now()
+		totalLeads := 1000000
+		batchSize := 10000
+		cols := []string{"id", "campaign_id", "phone_number", "name", "priority", "status", "attempts", "max_attempts", "created_at"}
+		r := rand.New(rand.NewSource(42))
+
+		for inserted := 0; inserted < totalLeads; inserted += batchSize {
+			rows := make([][]interface{}, batchSize)
+			for i := 0; i < batchSize; i++ {
+				idx := inserted + i
+				rows[i] = []interface{}{
+					fmt.Sprintf("lead-1m-%07d", idx),
+					cfg.CampaignID,
+					fmt.Sprintf("+1800%07d", idx),
+					fmt.Sprintf("Lead 1M %d", idx),
+					r.Intn(10),
+					"QUEUED",
+					0,
+					3,
+					time.Now().UTC(),
+				}
+			}
+			_, err := pool.CopyFrom(ctx, pgx.Identifier{"leads"}, cols, pgx.CopyFromRows(rows))
+			if err != nil {
+				log.Fatalf("CopyFrom error: %v", err)
+			}
+			if (inserted+batchSize)%200000 == 0 {
+				fmt.Printf("  Seeded %d / %d leads (%.1fs elapsed)\n", inserted+batchSize, totalLeads, time.Since(seedStart).Seconds())
 			}
 		}
-		_, err := pool.CopyFrom(ctx, pgx.Identifier{"leads"}, cols, pgx.CopyFromRows(rows))
-		if err != nil {
-			log.Fatalf("CopyFrom error: %v", err)
-		}
-		if (inserted+batchSize)%200000 == 0 {
-			fmt.Printf("  Seeded %d / %d leads (%.1fs elapsed)\n", inserted+batchSize, totalLeads, time.Since(seedStart).Seconds())
-		}
+		fmt.Printf("✔ 1,000,000 leads seeded in %.2fs (%.0f leads/s)\n", time.Since(seedStart).Seconds(), float64(totalLeads)/time.Since(seedStart).Seconds())
 	}
-	fmt.Printf("✔ 1,000,000 leads seeded in %.2fs (%.0f leads/s)\n", time.Since(seedStart).Seconds(), float64(totalLeads)/time.Since(seedStart).Seconds())
 
 	_, _ = pool.Exec(ctx, "ANALYZE leads;")
 
 	modes := []string{"unified", "split", "partial"}
 	workerLevels := []int{8, 32}
-	leadsPerRun := 1500
 	runsPerStep := 3
 
 	type ExpResult struct {
@@ -322,19 +328,28 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 		}
 		_, _ = pool.Exec(ctx, "ANALYZE leads;")
 
+		leadsPerRun := 1500
+		if mode == "unified" {
+			leadsPerRun = 100 // 2 batches of 50 leads (each batch takes ~7-9s to sort 979k rows)
+		}
+
 		for _, workers := range workerLevels {
 			var tpList, cp50List, rp50List, totp50List []float64
+			var cMeanList, rMeanList, totMeanList []float64
 
 			for run := 1; run <= runsPerStep; run++ {
 				fmt.Printf("\n>>> Running 1M Drain: Mode=%s, W=%d (Run %d/%d, Draining %d leads)...\n", mode, workers, run, runsPerStep, leadsPerRun)
-				tp, cp50, rp50, totp50 := run1MDrainStep(ctx, pool, repo, cfg.CampaignID, mode, workers, leadsPerRun, cfg.BatchSize)
+				tp, cp50, rp50, totp50, cMean, rMean, totMean := run1MDrainStep(ctx, pool, repo, cfg.CampaignID, mode, workers, leadsPerRun, cfg.BatchSize)
 				tpList = append(tpList, tp)
 				cp50List = append(cp50List, cp50)
 				rp50List = append(rp50List, rp50)
 				totp50List = append(totp50List, totp50)
+				cMeanList = append(cMeanList, cMean)
+				rMeanList = append(rMeanList, rMean)
+				totMeanList = append(totMeanList, totMean)
 				totalDrainedSoFar += leadsPerRun
-				fmt.Printf("    Run %d: %.1f leads/s, Claim p50: %.1fms, Record p50: %.1fms, Tot p50: %.1fms (Total Drained: %d)\n",
-					run, tp, cp50, rp50, totp50, totalDrainedSoFar)
+				fmt.Printf("    Run %d: %.1f leads/s | Tot p50: %.1fms (mean: %.1fms) | Claim p50: %.1fms (mean: %.1fms) | Record p50: %.1fms (mean: %.1fms) (Total Drained: %d)\n",
+					run, tp, totp50, totMean, cp50, cMean, rp50, rMean, totalDrainedSoFar)
 			}
 
 			minTp, maxTp := minMax(tpList)
@@ -391,7 +406,7 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 	runExplain(ctx, pool, fastPathQuery, "Split Fast Path (Partial Index WHERE status='QUEUED')", cfg.CampaignID, limit, intervalStr)
 }
 
-func run1MDrainStep(ctx context.Context, pool *pgxpool.Pool, repo *storage.PostgresRepository, campaignID string, mode string, workers int, numLeads int, batchSize int) (float64, float64, float64, float64) {
+func run1MDrainStep(ctx context.Context, pool *pgxpool.Pool, repo *storage.PostgresRepository, campaignID string, mode string, workers int, numLeads int, batchSize int) (float64, float64, float64, float64, float64, float64, float64) {
 	stepStart := time.Now()
 	var claimed atomic.Int64
 	var wg sync.WaitGroup
@@ -470,7 +485,18 @@ func run1MDrainStep(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postg
 	rp50 := percentile(recLats, 0.50)
 	totp50 := percentile(totLats, 0.50)
 
-	return tp, cp50, rp50, totp50
+	calcMean := func(vals []float64) float64 {
+		if len(vals) == 0 {
+			return 0
+		}
+		var s float64
+		for _, v := range vals {
+			s += v
+		}
+		return s / float64(len(vals))
+	}
+
+	return tp, cp50, rp50, totp50, calcMean(claimLats), calcMean(recLats), calcMean(totLats)
 }
 
 func minMax(vals []float64) (float64, float64) {

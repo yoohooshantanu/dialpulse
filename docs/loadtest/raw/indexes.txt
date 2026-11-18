@@ -1,0 +1,8 @@
+﻿                                              List of relations
+ Schema |        Name        | Type  |  Owner   | Table | Persistence | Access method |  Size   | Description 
+--------+--------------------+-------+----------+-------+-------------+---------------+---------+-------------
+ public | idx_leads_comp     | index | postgres | leads | permanent   | btree         | 9360 kB | 
+ public | idx_leads_dispatch | index | postgres | leads | permanent   | btree         | 6664 kB | 
+ public | leads_pkey         | index | postgres | leads | permanent   | btree         | 31 MB   | 
+(3 rows)
+

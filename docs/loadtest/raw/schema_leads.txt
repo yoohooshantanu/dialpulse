@@ -1,0 +1,28 @@
+﻿                                      Table "public.leads"
+     Column      |           Type           | Collation | Nullable |           Default           
+-----------------+--------------------------+-----------+----------+-----------------------------
+ id              | character varying(64)    |           | not null | 
+ campaign_id     | character varying(64)    |           | not null | 
+ phone_number    | character varying(32)    |           | not null | 
+ name            | character varying(255)   |           |          | 
+ priority        | integer                  |           | not null | 0
+ status          | character varying(32)    |           | not null | 'QUEUED'::character varying
+ attempts        | integer                  |           | not null | 0
+ max_attempts    | integer                  |           | not null | 3
+ failure_reason  | character varying(255)   |           |          | 
+ locked_by       | character varying(64)    |           |          | 
+ locked_at       | timestamp with time zone |           |          | 
+ lease_token     | character varying(64)    |           |          | 
+ last_attempt_at | timestamp with time zone |           |          | 
+ next_attempt_at | timestamp with time zone |           |          | 
+ created_at      | timestamp with time zone |           | not null | now()
+Indexes:
+    "leads_pkey" PRIMARY KEY, btree (id)
+    "idx_leads_comp" btree (campaign_id, priority DESC, created_at)
+    "idx_leads_dispatch" btree (campaign_id, status, priority DESC, next_attempt_at)
+    "uq_campaign_phone" UNIQUE CONSTRAINT, btree (campaign_id, phone_number)
+Foreign-key constraints:
+    "leads_campaign_id_fkey" FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+Referenced by:
+    TABLE "call_attempts" CONSTRAINT "call_attempts_lead_id_fkey" FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
+
