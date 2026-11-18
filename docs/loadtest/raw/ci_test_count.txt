@@ -11,4 +11,4 @@ Status: completed
 Test Counts extracted directly from CI Job Log (ci_job_134624810079.log):
 Top-Level Test Functions: 53 passed (0 failed, 0 skipped)
 Total Test Cases (including table-driven subtests): 72 passed (0 failed, 0 skipped)
-Package tests: ok github.com/yoohooshantanu/dialpulse/tests 8.784s
+Package tests: ok github.com/yoohooshantanu/predictive-dialer/tests 8.784s

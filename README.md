@@ -1,10 +1,10 @@
-# DialPulse: Distributed Predictive Outbound Campaign Engine & Dialer
+# PredictiveDialer: Distributed Predictive Outbound Campaign Engine & Dialer
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/yoohooshantanu/dialpulse.svg)](https://pkg.go.dev/github.com/yoohooshantanu/dialpulse)
-[![Go Report Card](https://goreportcard.com/badge/github.com/yoohooshantanu/dialpulse)](https://goreportcard.com/report/github.com/yoohooshantanu/dialpulse)
+[![Go Reference](https://pkg.go.dev/badge/github.com/yoohooshantanu/predictive-dialer.svg)](https://pkg.go.dev/github.com/yoohooshantanu/predictive-dialer)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yoohooshantanu/predictive-dialer)](https://goreportcard.com/report/github.com/yoohooshantanu/predictive-dialer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**DialPulse** is a high-throughput, distributed predictive campaign dialer written in Go. Designed for enterprise voice AI platforms (sales qualification, automated appointments, customer surveys), DialPulse balances maximum AI agent utilization with strict regulatory compliance: **sub-microsecond Do-Not-Call (DNC) screening via Bloom filters**, **Little's Law-inspired dynamic pacing heuristics with FTC abandonment braking**, **in-flight ringing capacity reservations**, **exactly-once call disposition accounting**, **database-level idempotent lead ingestion**, and **production PostgreSQL persistence (`pgx/v5`)**.
+**PredictiveDialer** is a high-throughput, distributed predictive campaign dialer written in Go. Designed for enterprise voice AI platforms (sales qualification, automated appointments, customer surveys), PredictiveDialer balances maximum AI agent utilization with strict regulatory compliance: **sub-microsecond Do-Not-Call (DNC) screening via Bloom filters**, **Little's Law-inspired dynamic pacing heuristics with FTC abandonment braking**, **in-flight ringing capacity reservations**, **exactly-once call disposition accounting**, **database-level idempotent lead ingestion**, and **production PostgreSQL persistence (`pgx/v5`)**.
 
 ---
 
@@ -99,9 +99,9 @@
    - Screens phone numbers in **~520 nanoseconds** with zero disk I/O and $<0.01\%$ false-positive probability.
 5. **Time-Zone & Regulatory Curfew Governor**:
    - Inspects North American area codes (NPA) to localize recipient time zones across Eastern, Central, Mountain, Pacific, Alaska, Hawaii, and Arizona.
-   - **Federal Baseline**: Enforces the federal 08:00 AM – 09:00 PM permissible telemarketing calling window pursuant to FCC regulations (47 CFR § 64.1200(c)(1)), holding off off-hours leads with future-dated retry timestamps without CPU busy-spinning. Note that some states enforce narrower windows (e.g., Florida and Louisiana at 8 AM – 8 PM); DialPulse provides the technical baseline and dual-zone intersection guards, with configurable hooks for state-specific curfew overrides.
-   - **Arizona Non-DST Compliance**: Maps Arizona area codes (`602`, `480`, `623`) to `America/Phoenix` (UTC-7 year-round). Unlike Denver (MDT, UTC-6), Arizona does not observe Daylight Saving Time; in summer, 14:30 UTC is 08:30 MDT (permitted) but 07:30 MST in Phoenix (prohibited). DialPulse strictly prevents dangerous off-hours calls in Arizona.
-   - **Navajo Nation & Northern Arizona Intersection Guard (`928`)**: Area code `928` covers both the Navajo Nation (which observes Mountain Daylight Time in summer) and the Hopi Reservation / rural Arizona (which does not observe DST). DialPulse enforces a dual-zone intersection check (`America/Phoenix` $\cap$ `America/Denver`): calls are permissible only when both zones fall within 08:00 – 21:00, preventing off-hours dials in the Navajo Nation after 9:00 PM MDT (which is 8:00 PM MST in Phoenix).
+   - **Federal Baseline**: Enforces the federal 08:00 AM – 09:00 PM permissible telemarketing calling window pursuant to FCC regulations (47 CFR § 64.1200(c)(1)), holding off off-hours leads with future-dated retry timestamps without CPU busy-spinning. Note that some states enforce narrower windows (e.g., Florida and Louisiana at 8 AM – 8 PM); PredictiveDialer provides the technical baseline and dual-zone intersection guards, with configurable hooks for state-specific curfew overrides.
+   - **Arizona Non-DST Compliance**: Maps Arizona area codes (`602`, `480`, `623`) to `America/Phoenix` (UTC-7 year-round). Unlike Denver (MDT, UTC-6), Arizona does not observe Daylight Saving Time; in summer, 14:30 UTC is 08:30 MDT (permitted) but 07:30 MST in Phoenix (prohibited). PredictiveDialer strictly prevents dangerous off-hours calls in Arizona.
+   - **Navajo Nation & Northern Arizona Intersection Guard (`928`)**: Area code `928` covers both the Navajo Nation (which observes Mountain Daylight Time in summer) and the Hopi Reservation / rural Arizona (which does not observe DST). PredictiveDialer enforces a dual-zone intersection check (`America/Phoenix` $\cap$ `America/Denver`): calls are permissible only when both zones fall within 08:00 – 21:00, preventing off-hours dials in the Navajo Nation after 9:00 PM MDT (which is 8:00 PM MST in Phoenix).
    - **El Paso Approximation**: Area code `915` (El Paso, TX) is correctly mapped to Mountain Time (`America/Denver`), diverging from the remainder of Texas (Central Time). Note: NPA area-code routing is an industry-standard technical heuristic subject to mobile number portability (MNP) where subscribers relocate while retaining their numbers. Production deployments can supplement NPA tables with number-level carrier data or recipient mailing addresses.
    - **Fail-Closed Unknown Area Codes**: Unrecognized area codes fail closed returning `model.ErrUnknownTimezone`, immediately routing the lead to `DEAD_LETTER_QUEUE` (`unknown_timezone`) rather than guessing or retrying indefinitely.
 6. **PostgreSQL Persistence & Distributed Work Queue Layer (`pgx/v5`)**:
@@ -123,7 +123,7 @@
      - If any publish call fails or times out, the transaction rolls back, releasing row locks so unpublished events remain safe in PostgreSQL and are retried on subsequent cycles.
      - **No Per-Lead Ordering Across Relays**: While individual leads are fenced at the database level, concurrent relays claim distinct batches in parallel without cross-worker coordination. Relays do not guarantee chronological order across different leads or across concurrent batches. Downstream consumers must be resilient to out-of-order event delivery.
    - **Honest Delivery Semantics: At-Least-Once Delivery**:
-     - Distributed message transport without distributed two-phase commit (2PC) cannot guarantee "exactly-once" delivery across network partitions, broker restarts, or publisher crashes occurring after transport transmission but before database acknowledgment. DialPulse explicitly guarantees **at-least-once delivery** at the transport layer, combined with **atomic idempotency** at the consumer layer.
+     - Distributed message transport without distributed two-phase commit (2PC) cannot guarantee "exactly-once" delivery across network partitions, broker restarts, or publisher crashes occurring after transport transmission but before database acknowledgment. PredictiveDialer explicitly guarantees **at-least-once delivery** at the transport layer, combined with **atomic idempotency** at the consumer layer.
    - **JetStream Deduplication Window Limitation**:
      - NATS JetStream provides message deduplication via the `Nats-Msg-Id` header, but this deduplication is strictly bounded by the stream's rolling `duplicate_window` (e.g., 2 minutes). If an outbox row is re-published after this sliding window expires, JetStream accepts it as a new message (`PubAck.Duplicate == false`). Transport deduplication alone is therefore insufficient for business correctness.
    - **Consumer Atomic Idempotency (`processed_events`)**:
@@ -131,10 +131,10 @@
      - If an event ID already exists in `processed_events`, the insert conflicts (`RowsAffected == 0`), and the consumer immediately acknowledges the message without executing any business side-effects.
    - **Poison Message & Dead-Letter Queue (DLQ)**:
      - The durable pull consumer sets broker-side `MaxDeliver` to unlimited (`-1`), delegating delivery threshold enforcement strictly to application logic (`msg.Metadata().NumDelivered >= MaxDeliveries`). This guarantees that if the DLQ broker experiences transient failure on the 3rd delivery, JetStream does not drop the message; instead, the consumer retries and routes the message to the DLQ once available.
-     - When delivery attempts reach `MaxDeliveries` (e.g., 3), the consumer routes the poison message along with diagnostic headers (`x-dlq-error`, `x-dead-letter-reason: max_deliveries_exceeded`, `x-original-event-id`, `x-delivery-count`) to `dialpulse.dlq.<aggregate_type>` and acknowledges the message from the main stream.
+     - When delivery attempts reach `MaxDeliveries` (e.g., 3), the consumer routes the poison message along with diagnostic headers (`x-dlq-error`, `x-dead-letter-reason: max_deliveries_exceeded`, `x-original-event-id`, `x-delivery-count`) to `predictive_dialer.dlq.<aggregate_type>` and acknowledges the message from the main stream.
      - **Malformed Message Fencing**: If an incoming message lacks a `Nats-Msg-Id` header, the consumer derives an identifier from the JetStream stream sequence (`malformed-seq-<stream_seq>`), attaches diagnostic header `x-dead-letter-reason: malformed_missing_id`, publishes it immediately to the DLQ, and terminates (`Ack`) without retrying the malformed payload.
      - *Crash Limitation*: If a consumer process crashes after successfully publishing to the DLQ subject but before acknowledging the message to the main JetStream stream, the message will be redelivered upon consumer recovery and routed to the DLQ again, creating a duplicate DLQ entry. Downstream DLQ consumers must treat DLQ entries as at-least-once.
-   - **Outbox Lag Metric (`dialpulse_outbox_lag_seconds`)**:
+   - **Outbox Lag Metric (`predictive_dialer_outbox_lag_seconds`)**:
      - Computed at scrape time directly against PostgreSQL:
        $$\text{OutboxLag} = \text{EXTRACT}\left(\text{EPOCH FROM } (\text{clock\_timestamp}() - \min(\text{created\_at}))\right) \quad \text{WHERE published\_at IS NULL}$$
      - Because it is evaluated independently of the relay's internal loop, the metric accurately reflects true backlog age and continues to grow monotonically if the relay process stalls or NATS becomes unavailable.
@@ -176,14 +176,14 @@ Located in [`migrations/001_init.sql`](migrations/001_init.sql) and [`migrations
 
 ## Docker & Deployment
 
-Spin up DialPulse along with PostgreSQL, NATS JetStream, and Prometheus:
+Spin up PredictiveDialer along with PostgreSQL, NATS JetStream, and Prometheus:
 
 ```bash
 docker-compose up -d
 ```
 
 Services:
-- **DialPulse Engine**: `http://localhost:8086`
+- **PredictiveDialer Engine**: `http://localhost:8086`
 - **PostgreSQL 16**: `localhost:5432` (Auto-runs migrations on first boot)
 - **NATS 2 (JetStream)**: `localhost:4222` (Management: `http://localhost:8222/healthz`)
 - **Prometheus**: `http://localhost:9091`
@@ -211,14 +211,14 @@ BenchmarkPredictivePacerCalculation-8   5,678,142 ops/sec    255.4 ns/op     32 
 Compile local binary:
 
 ```bash
-go build -o bin/dialpulse.exe ./cmd/server
+go build -o bin/predictive_dialer.exe ./cmd/server
 ```
 
 ---
 
 ## Load Test & Saturation Analysis: Lead Claiming & Transactional Outbox Scaling
 
-To rigorously characterize the throughput ceilings, database lock behavior, and architectural bottlenecks of DialPulse, an external high-concurrency Go load generator (`cmd/loadgen`) was executed against an isolated PostgreSQL 16 container (`--cpus=2.0`, `--memory=2g`, `max_connections=100`, `pg_stat_statements.track=all`) and NATS JetStream 2.
+To rigorously characterize the throughput ceilings, database lock behavior, and architectural bottlenecks of PredictiveDialer, an external high-concurrency Go load generator (`cmd/loadgen`) was executed against an isolated PostgreSQL 16 container (`--cpus=2.0`, `--memory=2g`, `max_connections=100`, `pg_stat_statements.track=all`) and NATS JetStream 2.
 
 > [!IMPORTANT]
 > **Measurement Discipline & Labeling**: Results are strictly reported as **"Max Claim-and-Record Rate (No Dial Time)"** and are **never converted to calls/sec**, as no carrier telephony delay or ring duration is simulated. Every metric reported is backed by an unedited raw artifact committed in [`docs/loadtest/raw/`](docs/loadtest/raw/).
@@ -516,7 +516,7 @@ Executed back-to-back at $W=8$ (3 runs each, 2,000 leads per run) under PostgreS
 ### 6. Lock Waits & Telemetry Sampling
 
 * **Exact Wait Events Recorded (`pg_stat_activity`)**:
-  * Sampling was restricted to active backend sessions: `WHERE datname = 'dialpulse_test' AND state IN ('active', 'idle in transaction')`.
+  * Sampling was restricted to active backend sessions: `WHERE datname = 'predictive_dialer_test' AND state IN ('active', 'idle in transaction')`.
   * `Client:ClientRead`: **68.4% of total wait samples** (PostgreSQL backends waiting for the Go client to transmit the next query).
   * `IO:WALSync`: 18.2% (Flushing transaction commit logs to disk).
   * `IO:BufFileWrite`: External merge sort disk spilling during unindexed 1M-lead queries.
@@ -558,7 +558,7 @@ Executed back-to-back at $W=8$ (3 runs each, 2,000 leads per run) under PostgreS
 
 ### 8. Technical Interview Deep-Dive Q&As
 
-#### Q1: How does DialPulse prevent duplicate lead dials and guarantee consumer idempotency?
+#### Q1: How does PredictiveDialer prevent duplicate lead dials and guarantee consumer idempotency?
 **Answer**:
 Mutual exclusion and idempotency are enforced at two boundaries:
 1. **Deduplication at Ingestion**: Unique constraint `uq_campaign_phone (campaign_id, phone_number)` combined with `ON CONFLICT DO NOTHING` ensures no phone number is ingested twice for the same campaign.
@@ -584,8 +584,8 @@ Mutual exclusion and idempotency are enforced at two boundaries:
 
 #### Q2: Can `SKIP LOCKED` cause deadlocks, and how does priority ordering behave under load?
 **Answer**:
-* **Deadlocks**: No. In DialPulse, `SELECT ... FOR UPDATE SKIP LOCKED` eliminates row-level deadlock wait-chains between claiming transactions because workers never block waiting for another transaction's held lock; PostgreSQL skips locked tuples and advances to unlocked ones. In `RecordAttemptStart` and `RecordCallOutcomeTx`, transactions acquire single-row locks (`WHERE id = $1 FOR UPDATE`), so circular lock dependency cycles cannot form.
-* **Priority Starvation**: DialPulse orders claims by `(priority DESC, created_at ASC)`. Higher-priority leads are dispatched first. If higher-priority leads arrive faster than the drain rate, lower-priority leads will be starved until the higher-priority queues clear.
+* **Deadlocks**: No. In PredictiveDialer, `SELECT ... FOR UPDATE SKIP LOCKED` eliminates row-level deadlock wait-chains between claiming transactions because workers never block waiting for another transaction's held lock; PostgreSQL skips locked tuples and advances to unlocked ones. In `RecordAttemptStart` and `RecordCallOutcomeTx`, transactions acquire single-row locks (`WHERE id = $1 FOR UPDATE`), so circular lock dependency cycles cannot form.
+* **Priority Starvation**: PredictiveDialer orders claims by `(priority DESC, created_at ASC)`. Higher-priority leads are dispatched first. If higher-priority leads arrive faster than the drain rate, lower-priority leads will be starved until the higher-priority queues clear.
 * **Locked-but-Discarded Row Overhead**: If a composite index without a status predicate (`idx_leads_comp`) is used, completed leads remain in the index. When 32 concurrent workers query `LIMIT 50 FOR UPDATE SKIP LOCKED`, later workers scan past thousands of non-queued tuples (`Rows Removed by Filter: 24,620`), checking row locks and fetching heap pages. A partial index `WHERE status = 'QUEUED'` eliminates this overhead by removing rows from the index as soon as they are claimed.
 
 #### Q3: Why is a lease token used in distributed claiming, how is it verified, and how does the Dead-Letter Queue (DLQ) work?
@@ -601,7 +601,7 @@ Mutual exclusion and idempotency are enforced at two boundaries:
 2. **Database Clock Reliance**:
    Lease expiration is strictly evaluated against PostgreSQL's transaction clock: `locked_at >= clock_timestamp() - interval`. This eliminates dependency on synchronized server wall clocks across distributed worker nodes.
 3. **Dead-Letter Queue (DLQ) Headers**:
-   When an event fails message processing repeatedly or contains corrupted payloads, the consumer routes the message to the DLQ stream (`dialpulse.dlq.>`) with headers matching the exact Go constants in `internal/queue/outbox_consumer.go`:
+   When an event fails message processing repeatedly or contains corrupted payloads, the consumer routes the message to the DLQ stream (`predictive_dialer.dlq.>`) with headers matching the exact Go constants in `internal/queue/outbox_consumer.go`:
    - For poison messages exceeding retries (`meta.NumDelivered > MaxDeliveries`):
      - `Nats-Msg-Id`: `dlq_<event.ID>`
      - `x-original-event-id`: `<event.ID>`
@@ -632,15 +632,15 @@ Mutual exclusion and idempotency are enforced at two boundaries:
 
 ```bash
 # 1. Start isolated PostgreSQL with resource caps and NATS JetStream
-docker run -d --name dialpulse-postgres -p 5432:5432 --cpus=2.0 --memory=2g \
-  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -e POSTGRES_DB=dialpulse_test \
+docker run -d --name predictive-dialer-postgres -p 5432:5432 --cpus=2.0 --memory=2g \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -e POSTGRES_DB=predictive_dialer_test \
   postgres:16-alpine -c max_connections=100 -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=all
 
-docker run -d --name dialpulse-nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js -m 8222
+docker run -d --name predictive-dialer-nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js -m 8222
 
 # 2. Apply migrations
-Get-Content migrations/001_init.sql | docker exec -i dialpulse-postgres psql -U postgres -d dialpulse_test
-Get-Content migrations/002_outbox.sql | docker exec -i dialpulse-postgres psql -U postgres -d dialpulse_test
+Get-Content migrations/001_init.sql | docker exec -i predictive-dialer-postgres psql -U postgres -d predictive_dialer_test
+Get-Content migrations/002_outbox.sql | docker exec -i predictive-dialer-postgres psql -U postgres -d predictive_dialer_test
 
 # 3. Run SELECT 1 Ping Round-Trip Benchmark
 go run ./cmd/loadgen -ping-bench=true

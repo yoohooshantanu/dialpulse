@@ -1,4 +1,4 @@
--- DialPulse Production PostgreSQL Schema
+-- PredictiveDialer Production PostgreSQL Schema
 -- Migration 001: Campaigns, Leads, Call Attempts & Dead Letter Queue (DLQ)
 
 CREATE TABLE IF NOT EXISTS campaigns (

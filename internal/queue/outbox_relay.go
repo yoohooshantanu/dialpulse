@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
-	"github.com/yoohooshantanu/dialpulse/internal/logger"
+	"github.com/yoohooshantanu/predictive-dialer/internal/logger"
 )
 
 // JetStreamPublisher abstracts NATS JetStream publication for dependency injection and testing.
@@ -34,7 +34,7 @@ type OutboxRelayConfig struct {
 	BatchSize      int           // Batch size for SKIP LOCKED claiming (default: 10)
 	PollInterval   time.Duration // Polling loop cadence (default: 50ms)
 	PublishTimeout time.Duration // Per-publish JetStream timeout (default: 2s)
-	SubjectPrefix  string        // Subject prefix, e.g. "dialpulse.events"
+	SubjectPrefix  string        // Subject prefix, e.g. "predictive_dialer.events"
 }
 
 func DefaultOutboxRelayConfig() OutboxRelayConfig {
@@ -42,7 +42,7 @@ func DefaultOutboxRelayConfig() OutboxRelayConfig {
 		BatchSize:      10,
 		PollInterval:   50 * time.Millisecond,
 		PublishTimeout: 2 * time.Second,
-		SubjectPrefix:  "dialpulse.events",
+		SubjectPrefix:  "predictive_dialer.events",
 	}
 }
 
@@ -85,7 +85,7 @@ func NewOutboxRelay(pool *pgxpool.Pool, publisher JetStreamPublisher, cfg Outbox
 		cfg.PublishTimeout = 2 * time.Second
 	}
 	if cfg.SubjectPrefix == "" {
-		cfg.SubjectPrefix = "dialpulse.events"
+		cfg.SubjectPrefix = "predictive_dialer.events"
 	}
 
 	return &OutboxRelay{

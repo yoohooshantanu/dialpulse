@@ -1,4 +1,4 @@
-name: DialPulse CI
+name: PredictiveDialer CI
 
 on:
   push:
@@ -63,5 +63,5 @@ jobs:
 
       - name: Build Server and Loadgen Binaries
         run: |
-          go build -v -o bin/dialpulse ./cmd/server
+          go build -v -o bin/predictive-dialer ./cmd/server
           go build -v -o bin/loadgen ./cmd/loadgen

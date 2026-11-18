@@ -13,12 +13,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/yoohooshantanu/dialpulse/internal/dnc"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
-	"github.com/yoohooshantanu/dialpulse/internal/pacer"
-	"github.com/yoohooshantanu/dialpulse/internal/queue"
-	"github.com/yoohooshantanu/dialpulse/internal/storage"
-	"github.com/yoohooshantanu/dialpulse/internal/timezone"
+	"github.com/yoohooshantanu/predictive-dialer/internal/dnc"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/pacer"
+	"github.com/yoohooshantanu/predictive-dialer/internal/queue"
+	"github.com/yoohooshantanu/predictive-dialer/internal/storage"
+	"github.com/yoohooshantanu/predictive-dialer/internal/timezone"
 )
 
 func getTestDatabaseURL(t *testing.T) string {
@@ -2648,7 +2648,7 @@ func TestTCPACurfewTableDriven(t *testing.T) {
 			description: "Phoenix is 20:30 (8:30 PM, allowed), whereas Denver is 21:30 (prohibited)",
 		},
 		// Area code 928 covers both the Navajo Nation (observes DST) and Hopi / rural Arizona (non-DST).
-		// DialPulse requires intersection: both zones must be within legal window.
+		// PredictiveDialer requires intersection: both zones must be within legal window.
 		{
 			name:        "Arizona 928 summer evening prohibited in Navajo Nation (21:30 Navajo vs 20:30 Phoenix)",
 			phone:       "+1 (928) 555-0100",

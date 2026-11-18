@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/yoohooshantanu/dialpulse/internal/dnc"
-	"github.com/yoohooshantanu/dialpulse/internal/logger"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/dnc"
+	"github.com/yoohooshantanu/predictive-dialer/internal/logger"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
 )
 
 // CampaignRepository abstracts PostgreSQL persistence for campaigns, leads, and call attempts

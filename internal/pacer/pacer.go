@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yoohooshantanu/dialpulse/internal/logger"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/logger"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
 )
 
 // PredictivePacer calculates optimal outbound lines to dial balancing agent utilization and legal drop-rate caps

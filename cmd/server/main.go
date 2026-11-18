@@ -15,13 +15,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
-	"github.com/yoohooshantanu/dialpulse/internal/dnc"
-	"github.com/yoohooshantanu/dialpulse/internal/logger"
-	"github.com/yoohooshantanu/dialpulse/internal/metrics"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
-	"github.com/yoohooshantanu/dialpulse/internal/queue"
-	"github.com/yoohooshantanu/dialpulse/internal/storage"
-	"github.com/yoohooshantanu/dialpulse/internal/timezone"
+	"github.com/yoohooshantanu/predictive-dialer/internal/dnc"
+	"github.com/yoohooshantanu/predictive-dialer/internal/logger"
+	"github.com/yoohooshantanu/predictive-dialer/internal/metrics"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/queue"
+	"github.com/yoohooshantanu/predictive-dialer/internal/storage"
+	"github.com/yoohooshantanu/predictive-dialer/internal/timezone"
 )
 
 func getEnv(key, defaultVal string) string {
@@ -128,7 +128,7 @@ func (s *ServerState) getOrHydrateCampaign(ctx context.Context, campaignID strin
 
 func main() {
 	port := getEnv("PORT", "8086")
-	logger.L.Info("starting_dialpulse_engine", "port", port)
+	logger.L.Info("starting_predictive_dialer_engine", "port", port)
 
 	// Connect to PostgreSQL persistence layer if DATABASE_URL is configured
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -394,7 +394,7 @@ func main() {
 	}
 
 	go func() {
-		logger.L.Info("dialpulse_listening", "port", port)
+		logger.L.Info("predictive_dialer_listening", "port", port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.L.Error("server_listen_failed", "error", err)
 		}
@@ -404,7 +404,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	logger.L.Info("shutting_down_dialpulse")
+	logger.L.Info("shutting_down_predictive-dialer")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -418,5 +418,5 @@ func main() {
 		engine.Stop()
 	}
 	state.mu.Unlock()
-	logger.L.Info("dialpulse_terminated_cleanly")
+	logger.L.Info("predictive_dialer_terminated_cleanly")
 }

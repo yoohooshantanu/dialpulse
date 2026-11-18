@@ -3,8 +3,8 @@ package timezone
 import (
 	"time"
 
-	"github.com/yoohooshantanu/dialpulse/internal/dnc"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/dnc"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
 )
 
 // TimezoneGovernor enforces legal outbound dialing windows based on recipient area codes (TCPA 08:00 - 21:00)
@@ -58,7 +58,7 @@ func NewTimezoneGovernor() *TimezoneGovernor {
 		"602": {phoenix}, "480": {phoenix}, "623": {phoenix},
 		// Area code 928 covers both the Navajo Nation (which observes DST / Mountain Time)
 		// and Hopi / rural Arizona (which does not observe DST / Phoenix Time).
-		// DialPulse enforces the conservative intersection: dials are permitted only when
+		// PredictiveDialer enforces the conservative intersection: dials are permitted only when
 		// BOTH Phoenix and Navajo (Denver) local times fall within 08:00 - 21:00.
 		"928": {phoenix, mountain},
 		// Pacific

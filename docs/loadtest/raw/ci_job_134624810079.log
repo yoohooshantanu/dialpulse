@@ -89,7 +89,7 @@
 2026-11-18T06:32:15.0901459Z Digest: sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
 2026-11-18T06:32:15.0902022Z Status: Downloaded newer image for postgres:16-alpine
 2026-11-18T06:32:15.0906727Z docker.io/library/postgres:16-alpine
-2026-11-18T06:32:15.0981185Z ##[command]/usr/bin/docker create --name fe4583f525d94eeea2457b1ff2255436_postgres16alpine_e5fc7f --label 5295d3 --network github_network_badb95a4878c417882c4f760c43f91e6 --network-alias postgres -p 5432:5432 --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5 -e "POSTGRES_DB=dialpulse_test" -e "POSTGRES_USER=postgres" -e "POSTGRES_PASSWORD=password" -e GITHUB_ACTIONS=true -e CI=true postgres:16-alpine
+2026-11-18T06:32:15.0981185Z ##[command]/usr/bin/docker create --name fe4583f525d94eeea2457b1ff2255436_postgres16alpine_e5fc7f --label 5295d3 --network github_network_badb95a4878c417882c4f760c43f91e6 --network-alias postgres -p 5432:5432 --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5 -e "POSTGRES_DB=predictive_dialer_test" -e "POSTGRES_USER=postgres" -e "POSTGRES_PASSWORD=password" -e GITHUB_ACTIONS=true -e CI=true postgres:16-alpine
 2026-11-18T06:32:16.7180832Z 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
 2026-11-18T06:32:16.7204103Z ##[command]/usr/bin/docker start 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
 2026-11-18T06:32:16.8912718Z 8e7bd2c945d9d9c7b98e683e88b1ee42251a33bce8824f45efa749d969e280d1
@@ -115,7 +115,7 @@
 2026-11-18T06:32:31.1355056Z ##[endgroup]
 2026-11-18T06:32:31.1584234Z ##[group]Run actions/checkout@v4
 2026-11-18T06:32:31.1584658Z with:
-2026-11-18T06:32:31.1584844Z   repository: yoohooshantanu/dialpulse
+2026-11-18T06:32:31.1584844Z   repository: yoohooshantanu/predictive-dialer
 2026-11-18T06:32:31.1586978Z   token: ***
 2026-11-18T06:32:31.1587151Z   ssh-strict: true
 2026-11-18T06:32:31.1587326Z   ssh-user: git
@@ -130,18 +130,18 @@
 2026-11-18T06:32:31.1588930Z   set-safe-directory: true
 2026-11-18T06:32:31.1589132Z   allow-unsafe-pr-checkout: false
 2026-11-18T06:32:31.1589463Z ##[endgroup]
-2026-11-18T06:32:31.3612015Z Syncing repository: yoohooshantanu/dialpulse
+2026-11-18T06:32:31.3612015Z Syncing repository: yoohooshantanu/predictive-dialer
 2026-11-18T06:32:31.3613422Z ##[group]Getting Git version info
-2026-11-18T06:32:31.3613811Z Working directory is '/home/runner/work/dialpulse/dialpulse'
+2026-11-18T06:32:31.3613811Z Working directory is '/home/runner/work/predictive-dialer/predictive-dialer'
 2026-11-18T06:32:31.3614515Z [command]/usr/bin/git version
 2026-11-18T06:32:31.3626339Z git version 2.56.1
 2026-11-18T06:32:31.3641233Z ##[endgroup]
 2026-11-18T06:32:31.3652502Z Temporarily overriding HOME='/home/runner/work/_temp/5e0c22cd-9d57-4f85-8aba-8c50c0c9ab45' before making global git config changes
 2026-11-18T06:32:31.3653535Z Adding repository directory to the temporary git global config as a safe directory
-2026-11-18T06:32:31.3656276Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dialpulse/dialpulse
-2026-11-18T06:32:31.3705933Z Deleting the contents of '/home/runner/work/dialpulse/dialpulse'
+2026-11-18T06:32:31.3656276Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/predictive-dialer/predictive-dialer
+2026-11-18T06:32:31.3705933Z Deleting the contents of '/home/runner/work/predictive-dialer/predictive-dialer'
 2026-11-18T06:32:31.3710567Z ##[group]Initializing the repository
-2026-11-18T06:32:31.3713625Z [command]/usr/bin/git init /home/runner/work/dialpulse/dialpulse
+2026-11-18T06:32:31.3713625Z [command]/usr/bin/git init /home/runner/work/predictive-dialer/predictive-dialer
 2026-11-18T06:32:31.3784823Z hint: Using 'master' as the name for the initial branch. This default branch name
 2026-11-18T06:32:31.3785746Z hint: will change to "main" in Git 3.0. To configure the initial branch name
 2026-11-18T06:32:31.3786668Z hint: to use in all of your new repositories, which will suppress this warning,
@@ -155,8 +155,8 @@
 2026-11-18T06:32:31.3789719Z hint: 	git branch -m <name>
 2026-11-18T06:32:31.3789909Z hint:
 2026-11-18T06:32:31.3790167Z hint: Disable this message with "git config set advice.defaultBranchName false"
-2026-11-18T06:32:31.3793236Z Initialized empty Git repository in /home/runner/work/dialpulse/dialpulse/.git/
-2026-11-18T06:32:31.3802983Z [command]/usr/bin/git remote add origin https://github.com/yoohooshantanu/dialpulse
+2026-11-18T06:32:31.3793236Z Initialized empty Git repository in /home/runner/work/predictive-dialer/predictive-dialer/.git/
+2026-11-18T06:32:31.3802983Z [command]/usr/bin/git remote add origin https://github.com/yoohooshantanu/predictive-dialer
 2026-11-18T06:32:31.3844912Z ##[endgroup]
 2026-11-18T06:32:31.3845469Z ##[group]Disabling automatic garbage collection
 2026-11-18T06:32:31.3848276Z [command]/usr/bin/git config --local gc.auto 0
@@ -172,7 +172,7 @@
 2026-11-18T06:32:31.4966614Z ##[endgroup]
 2026-11-18T06:32:31.4967171Z ##[group]Fetching the repository
 2026-11-18T06:32:31.4974165Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +3a06eefe2748fdd3e385c2c0a412ed1956bd4b90:refs/remotes/origin/feat/loadtest-outbox
-2026-11-18T06:32:32.0268400Z From https://github.com/yoohooshantanu/dialpulse
+2026-11-18T06:32:32.0268400Z From https://github.com/yoohooshantanu/predictive-dialer
 2026-11-18T06:32:32.0269053Z  * [new ref]         3a06eefe2748fdd3e385c2c0a412ed1956bd4b90 -> origin/feat/loadtest-outbox
 2026-11-18T06:32:32.0273387Z ##[endgroup]
 2026-11-18T06:32:32.0273715Z ##[group]Determining the checkout info
@@ -219,8 +219,8 @@
 2026-11-18T06:32:33.8479677Z {"status":"ok"}NATS JetStream is healthy and ready
 2026-11-18T06:32:33.8515298Z ##[group]Run sudo apt-get update && sudo apt-get install -y postgresql-client
 2026-11-18T06:32:33.8515747Z [36;1msudo apt-get update && sudo apt-get install -y postgresql-client[0m
-2026-11-18T06:32:33.8516222Z [36;1mPGPASSWORD=password psql -h localhost -U postgres -d dialpulse_test -f migrations/001_init.sql[0m
-2026-11-18T06:32:33.8516767Z [36;1mPGPASSWORD=password psql -h localhost -U postgres -d dialpulse_test -f migrations/002_outbox.sql[0m
+2026-11-18T06:32:33.8516222Z [36;1mPGPASSWORD=password psql -h localhost -U postgres -d predictive_dialer_test -f migrations/001_init.sql[0m
+2026-11-18T06:32:33.8516767Z [36;1mPGPASSWORD=password psql -h localhost -U postgres -d predictive_dialer_test -f migrations/002_outbox.sql[0m
 2026-11-18T06:32:33.8561089Z shell: /usr/bin/bash -e {0}
 2026-11-18T06:32:33.8561306Z ##[endgroup]
 2026-11-18T06:32:33.9204315Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
@@ -335,7 +335,7 @@
 2026-11-18T06:32:48.1449491Z Received 54525952 of 159880137 (34.1%), 51.9 MBs/sec
 2026-11-18T06:32:49.0111935Z Received 159880137 of 159880137 (100.0%), 81.7 MBs/sec
 2026-11-18T06:32:49.0112306Z Cache Size: ~152 MB (159880137 B)
-2026-11-18T06:32:49.0136527Z [command]/usr/bin/tar -xf /home/runner/work/_temp/21922f5f-9e35-4062-9b74-fa409355a3c8/cache.tzst -P -C /home/runner/work/dialpulse/dialpulse --use-compress-program unzstd
+2026-11-18T06:32:49.0136527Z [command]/usr/bin/tar -xf /home/runner/work/_temp/21922f5f-9e35-4062-9b74-fa409355a3c8/cache.tzst -P -C /home/runner/work/predictive-dialer/predictive-dialer --use-compress-program unzstd
 2026-11-18T06:32:49.6190919Z Cache restored successfully
 2026-11-18T06:32:49.6259235Z Cache restored from key: setup-go-Linux-x64-ubuntu26-go-1.23.12-ab6b5b857451125d580c73518ca7fadc9a30b9285d20cf72e22549e002e1a3ad
 2026-11-18T06:32:49.6278223Z go version go1.23.12 linux/amd64
@@ -375,7 +375,7 @@
 2026-11-18T06:32:49.6468743Z CC='gcc'
 2026-11-18T06:32:49.6468930Z CXX='g++'
 2026-11-18T06:32:49.6469114Z CGO_ENABLED='1'
-2026-11-18T06:32:49.6469342Z GOMOD='/home/runner/work/dialpulse/dialpulse/go.mod'
+2026-11-18T06:32:49.6469342Z GOMOD='/home/runner/work/predictive-dialer/predictive-dialer/go.mod'
 2026-11-18T06:32:49.6469600Z GOWORK=''
 2026-11-18T06:32:49.6469766Z CGO_CFLAGS='-O2 -g'
 2026-11-18T06:32:49.6469948Z CGO_CPPFLAGS=''
@@ -390,7 +390,7 @@
 2026-11-18T06:32:49.6737319Z [36;1mgo test -v -race ./tests/...[0m
 2026-11-18T06:32:49.6782975Z shell: /usr/bin/bash -e {0}
 2026-11-18T06:32:49.6783344Z env:
-2026-11-18T06:32:49.6783844Z   TEST_DATABASE_URL: ***localhost:5432/dialpulse_test?sslmode=disable
+2026-11-18T06:32:49.6783844Z   TEST_DATABASE_URL: ***localhost:5432/predictive_dialer_test?sslmode=disable
 2026-11-18T06:32:49.6784142Z   REQUIRE_DB: 1
 2026-11-18T06:32:49.6784340Z   TEST_NATS_URL: nats://localhost:4222
 2026-11-18T06:32:49.6784562Z   REQUIRE_NATS: 1
@@ -654,16 +654,16 @@
 2026-11-18T06:32:59.4879300Z {"time":"2026-11-18T06:32:59.487755266Z","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
 2026-11-18T06:32:59.7971951Z --- PASS: TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry (0.34s)
 2026-11-18T06:32:59.7972429Z PASS
-2026-11-18T06:33:00.8010437Z ok  	github.com/yoohooshantanu/dialpulse/tests	9.676s
-2026-11-18T06:33:00.9002917Z ##[group]Run go build -v -o bin/dialpulse ./cmd/server
-2026-11-18T06:33:00.9003612Z [36;1mgo build -v -o bin/dialpulse ./cmd/server[0m
+2026-11-18T06:33:00.8010437Z ok  	github.com/yoohooshantanu/predictive-dialer/tests	9.676s
+2026-11-18T06:33:00.9002917Z ##[group]Run go build -v -o bin/predictive-dialer ./cmd/server
+2026-11-18T06:33:00.9003612Z [36;1mgo build -v -o bin/predictive-dialer ./cmd/server[0m
 2026-11-18T06:33:00.9004042Z [36;1mgo build -v -o bin/loadgen ./cmd/loadgen[0m
 2026-11-18T06:33:00.9054841Z shell: /usr/bin/bash -e {0}
 2026-11-18T06:33:00.9055065Z ##[endgroup]
-2026-11-18T06:33:01.0876746Z github.com/yoohooshantanu/dialpulse/internal/storage
-2026-11-18T06:33:01.2061128Z github.com/yoohooshantanu/dialpulse/internal/queue
-2026-11-18T06:33:01.3358484Z github.com/yoohooshantanu/dialpulse/cmd/server
-2026-11-18T06:33:01.8939217Z github.com/yoohooshantanu/dialpulse/cmd/loadgen
+2026-11-18T06:33:01.0876746Z github.com/yoohooshantanu/predictive-dialer/internal/storage
+2026-11-18T06:33:01.2061128Z github.com/yoohooshantanu/predictive-dialer/internal/queue
+2026-11-18T06:33:01.3358484Z github.com/yoohooshantanu/predictive-dialer/cmd/server
+2026-11-18T06:33:01.8939217Z github.com/yoohooshantanu/predictive-dialer/cmd/loadgen
 2026-11-18T06:33:02.4445711Z Post job cleanup.
 2026-11-18T06:33:02.5446354Z (node:3505) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
 2026-11-18T06:33:02.5446960Z (Use `node --trace-deprecation ...` to show where the warning was created)
@@ -677,7 +677,7 @@
 2026-11-18T06:33:02.6531201Z git version 2.56.1
 2026-11-18T06:33:02.6560688Z Temporarily overriding HOME='/home/runner/work/_temp/6b487464-abc0-4d8f-9d81-4f93a7aa5f74' before making global git config changes
 2026-11-18T06:33:02.6561799Z Adding repository directory to the temporary git global config as a safe directory
-2026-11-18T06:33:02.6566166Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/dialpulse/dialpulse
+2026-11-18T06:33:02.6566166Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/predictive-dialer/predictive-dialer
 2026-11-18T06:33:02.6916936Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
 2026-11-18T06:33:02.6961241Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
 2026-11-18T06:33:02.7238109Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader

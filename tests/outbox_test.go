@@ -19,10 +19,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 
-	"github.com/yoohooshantanu/dialpulse/internal/metrics"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
-	"github.com/yoohooshantanu/dialpulse/internal/queue"
-	"github.com/yoohooshantanu/dialpulse/internal/storage"
+	"github.com/yoohooshantanu/predictive-dialer/internal/metrics"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/queue"
+	"github.com/yoohooshantanu/predictive-dialer/internal/storage"
 )
 
 func getTestNATSURL(t *testing.T) string {
@@ -58,7 +58,7 @@ func setupTestJetStream(t *testing.T, natsURL, streamName, subjectFilter string,
 
 	streamCfg := &nats.StreamConfig{
 		Name:       streamName,
-		Subjects:   []string{subjectFilter, "dialpulse.dlq.>"},
+		Subjects:   []string{subjectFilter, "predictive_dialer.dlq.>"},
 		Storage:    nats.MemoryStorage,
 		Duplicates: dedupWindow,
 		MaxAge:     5 * time.Minute,
@@ -124,7 +124,7 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	_, _ = repo.Pool().Exec(ctx, `DELETE FROM outbox_events;`)
 
 	streamName := "STREAM_ACCUM_DRAIN_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	_, js := setupTestJetStream(t, natsURL, streamName, "dialpulse.events.accum.>", 2*time.Minute)
+	_, js := setupTestJetStream(t, natsURL, streamName, "predictive_dialer.events.accum.>", 2*time.Minute)
 
 	// Seed campaign and lead in DIALING status
 	campID := "camp_accum_" + uuid.New().String()[:8]
@@ -189,7 +189,7 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	// Run relay with FAILING publisher (simulating NATS down)
 	failingRelay := queue.NewOutboxRelay(repo.Pool(), &FailingPublisher{}, queue.OutboxRelayConfig{
 		BatchSize:     5,
-		SubjectPrefix: "dialpulse.events.accum",
+		SubjectPrefix: "predictive_dialer.events.accum",
 	})
 	n, err := failingRelay.ProcessBatch(ctx)
 	if err == nil {
@@ -206,7 +206,7 @@ func TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery(t *testing.T) {
 	// Now connect relay with LIVE JetStream publisher (simulating NATS recovery)
 	liveRelay := queue.NewOutboxRelay(repo.Pool(), queue.NewNATSJetStreamPublisher(js), queue.OutboxRelayConfig{
 		BatchSize:     10,
-		SubjectPrefix: "dialpulse.events.accum",
+		SubjectPrefix: "predictive_dialer.events.accum",
 	})
 	publishedCount, err := liveRelay.ProcessBatch(ctx)
 	if err != nil {
@@ -240,7 +240,7 @@ func TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect(t *testin
 	defer repo.Close()
 
 	streamName := "STREAM_CRASH_MARK_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	_, js := setupTestJetStream(t, natsURL, streamName, "dialpulse.events.crash.>", 2*time.Minute)
+	_, js := setupTestJetStream(t, natsURL, streamName, "predictive_dialer.events.crash.>", 2*time.Minute)
 
 	eventID := "evt_crash_" + uuid.New().String()
 	campID := "camp_crash_" + uuid.New().String()[:8]
@@ -249,7 +249,7 @@ func TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect(t *testin
 		"status":      "ANSWERED",
 	})
 
-	subject := "dialpulse.events.crash.lead.outcome"
+	subject := "predictive_dialer.events.crash.lead.outcome"
 	msg1 := nats.NewMsg(subject)
 	msg1.Header.Set("Nats-Msg-Id", eventID)
 	msg1.Header.Set("x-aggregate-type", "lead")
@@ -329,7 +329,7 @@ func TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect(t *test
 
 	// Short deduplication window of 1 second
 	streamName := "STREAM_DEDUP_EXPIRE_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	_, js := setupTestJetStream(t, natsURL, streamName, "dialpulse.events.window.>", 1*time.Second)
+	_, js := setupTestJetStream(t, natsURL, streamName, "predictive_dialer.events.window.>", 1*time.Second)
 
 	eventID := "evt_window_expire_" + uuid.New().String()
 	campID := "camp_window_" + uuid.New().String()[:8]
@@ -338,7 +338,7 @@ func TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect(t *test
 		"status":      "CONNECTED",
 	})
 
-	subject := "dialpulse.events.window.lead.outcome"
+	subject := "predictive_dialer.events.window.lead.outcome"
 	msg1 := nats.NewMsg(subject)
 	msg1.Header.Set("Nats-Msg-Id", eventID)
 	msg1.Header.Set("x-aggregate-type", "lead")
@@ -424,10 +424,10 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 	defer repo.Close()
 
 	streamName := "STREAM_POISON_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	nc, js := setupTestJetStream(t, natsURL, streamName, "dialpulse.events.poison.>", 2*time.Minute)
+	nc, js := setupTestJetStream(t, natsURL, streamName, "predictive_dialer.events.poison.>", 2*time.Minute)
 
 	// Subscribe to DLQ subject to observe arrival
-	dlqSubject := "dialpulse.dlq.lead"
+	dlqSubject := "predictive_dialer.dlq.lead"
 	dlqSub, err := nc.SubscribeSync(dlqSubject)
 	if err != nil {
 		t.Fatalf("failed subscribing to DLQ subject: %v", err)
@@ -435,7 +435,7 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 	defer dlqSub.Unsubscribe()
 
 	eventID := "evt_poison_" + uuid.New().String()
-	subject := "dialpulse.events.poison.lead.poison_test"
+	subject := "predictive_dialer.events.poison.lead.poison_test"
 	msg := nats.NewMsg(subject)
 	msg.Header.Set("Nats-Msg-Id", eventID)
 	msg.Header.Set("x-aggregate-type", "lead")
@@ -449,13 +449,13 @@ func TestPoisonMessageReachesDLQAfterMaxDeliveries(t *testing.T) {
 	consumer := queue.NewOutboxConsumer(repo.Pool(), js, &FailingHandler{}, queue.OutboxConsumerConfig{
 		ConsumerName:     "poison_consumer",
 		StreamName:       streamName,
-		DLQSubjectPrefix: "dialpulse.dlq",
+		DLQSubjectPrefix: "predictive_dialer.dlq",
 		MaxDeliveries:    3,
 		BaseBackoff:      5 * time.Millisecond,
 	})
 
 	// Create durable pull subscription to receive redeliveries
-	sub, err := js.PullSubscribe("dialpulse.events.poison.>", "poison_durable", nats.MaxDeliver(3))
+	sub, err := js.PullSubscribe("predictive_dialer.events.poison.>", "poison_durable", nats.MaxDeliver(3))
 	if err != nil {
 		t.Fatalf("pull subscribe failed: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID(t *testing.T) {
 	defer repo.Close()
 
 	streamName := "STREAM_CONSUMER_DEDUP_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	_, js := setupTestJetStream(t, natsURL, streamName, "dialpulse.events.cdedup.>", 2*time.Minute)
+	_, js := setupTestJetStream(t, natsURL, streamName, "predictive_dialer.events.cdedup.>", 2*time.Minute)
 
 	campID := "camp_cdedup_" + uuid.New().String()[:8]
 	eventID := "evt_cdedup_" + uuid.New().String()
@@ -516,12 +516,12 @@ func TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID(t *testing.T) {
 		StreamName:   streamName,
 	})
 
-	msg1 := nats.NewMsg("dialpulse.events.cdedup.lead.outcome")
+	msg1 := nats.NewMsg("predictive_dialer.events.cdedup.lead.outcome")
 	msg1.Header.Set("Nats-Msg-Id", eventID)
 	msg1.Header.Set("x-aggregate-type", "lead")
 	msg1.Data = payloadBytes
 
-	msg2 := nats.NewMsg("dialpulse.events.cdedup.lead.outcome")
+	msg2 := nats.NewMsg("predictive_dialer.events.cdedup.lead.outcome")
 	msg2.Header.Set("Nats-Msg-Id", eventID)
 	msg2.Header.Set("x-aggregate-type", "lead")
 	msg2.Data = payloadBytes
@@ -579,12 +579,12 @@ func TestConcurrentRelaysSkipLockedNoDuplicatePublish(t *testing.T) {
 	relay1 := queue.NewOutboxRelay(repo.Pool(), sharedPublisher, queue.OutboxRelayConfig{
 		BatchSize:     5,
 		PollInterval:  10 * time.Millisecond,
-		SubjectPrefix: "dialpulse.events.concurrent",
+		SubjectPrefix: "predictive_dialer.events.concurrent",
 	})
 	relay2 := queue.NewOutboxRelay(repo.Pool(), sharedPublisher, queue.OutboxRelayConfig{
 		BatchSize:     5,
 		PollInterval:  10 * time.Millisecond,
-		SubjectPrefix: "dialpulse.events.concurrent",
+		SubjectPrefix: "predictive_dialer.events.concurrent",
 	})
 
 	var wg sync.WaitGroup
@@ -635,7 +635,7 @@ func TestConcurrentRelaysSkipLockedNoDuplicatePublish(t *testing.T) {
 	}
 }
 
-// 7. Metric dialpulse_outbox_lag_seconds keeps growing when relay is stopped
+// 7. Metric predictive_dialer_outbox_lag_seconds keeps growing when relay is stopped
 func TestOutboxLagMetricKeepsGrowingWhenRelayStopped(t *testing.T) {
 	dbURL := getTestDatabaseURL(t)
 	ctx := context.Background()
@@ -677,8 +677,8 @@ func TestOutboxLagMetricKeepsGrowingWhenRelayStopped(t *testing.T) {
 	res1, _ := io.ReadAll(rec1.Body)
 	body1 := string(res1)
 
-	if !strings.Contains(body1, "dialpulse_outbox_lag_seconds") {
-		t.Fatalf("metrics endpoint missing dialpulse_outbox_lag_seconds in body: %s", body1)
+	if !strings.Contains(body1, "predictive_dialer_outbox_lag_seconds") {
+		t.Fatalf("metrics endpoint missing predictive_dialer_outbox_lag_seconds in body: %s", body1)
 	}
 
 	lag1, err := repo.GetOutboxLagSeconds(ctx)
@@ -766,14 +766,14 @@ func TestRelayBatchesDoNotBlockEachOther(t *testing.T) {
 	relayA := queue.NewOutboxRelay(repo.Pool(), blockingPub, queue.OutboxRelayConfig{
 		BatchSize:      10,
 		PublishTimeout: 5 * time.Second,
-		SubjectPrefix:  "dialpulse.events.noblock",
+		SubjectPrefix:  "predictive_dialer.events.noblock",
 	})
 
 	fastPub := NewCountingPublisher(nil)
 	relayB := queue.NewOutboxRelay(repo.Pool(), fastPub, queue.OutboxRelayConfig{
 		BatchSize:      10,
 		PublishTimeout: 2 * time.Second,
-		SubjectPrefix:  "dialpulse.events.noblock",
+		SubjectPrefix:  "predictive_dialer.events.noblock",
 	})
 
 	relayAStarted := make(chan struct{})
@@ -947,10 +947,10 @@ func TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ(t *testing.T) {
 	defer repo.Close()
 
 	streamName := "STREAM_DLQ_RETRY_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	subjectPrefix := "dialpulse.events.dlqretry." + streamName
+	subjectPrefix := "predictive_dialer.events.dlqretry." + streamName
 	nc, js := setupTestJetStream(t, natsURL, streamName, subjectPrefix+".>", 2*time.Minute)
 
-	dlqSubject := "dialpulse.dlq.lead"
+	dlqSubject := "predictive_dialer.dlq.lead"
 	dlqSub, err := nc.SubscribeSync(dlqSubject)
 	if err != nil {
 		t.Fatalf("failed subscribing to DLQ subject: %v", err)
@@ -971,7 +971,7 @@ func TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ(t *testing.T) {
 	consumer := queue.NewOutboxConsumer(repo.Pool(), js, &FailingHandler{}, queue.OutboxConsumerConfig{
 		ConsumerName:     "dlq_retry_consumer",
 		StreamName:       streamName,
-		DLQSubjectPrefix: "dialpulse.dlq",
+		DLQSubjectPrefix: "predictive_dialer.dlq",
 		MaxDeliveries:    3,
 		BaseBackoff:      5 * time.Millisecond,
 	})
@@ -1063,10 +1063,10 @@ func TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry(t *testing.T) {
 	defer repo.Close()
 
 	streamName := "STREAM_MALFORMED_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	subjectPrefix := "dialpulse.events.malformed." + streamName
+	subjectPrefix := "predictive_dialer.events.malformed." + streamName
 	nc, js := setupTestJetStream(t, natsURL, streamName, subjectPrefix+".>", 2*time.Minute)
 
-	dlqSubject := "dialpulse.dlq.malformed"
+	dlqSubject := "predictive_dialer.dlq.malformed"
 	dlqSub, err := nc.SubscribeSync(dlqSubject)
 	if err != nil {
 		t.Fatalf("failed subscribing to DLQ subject: %v", err)
@@ -1087,7 +1087,7 @@ func TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry(t *testing.T) {
 	consumer := queue.NewOutboxConsumer(repo.Pool(), js, &FailingHandler{}, queue.OutboxConsumerConfig{
 		ConsumerName:     "malformed_consumer",
 		StreamName:       streamName,
-		DLQSubjectPrefix: "dialpulse.dlq",
+		DLQSubjectPrefix: "predictive_dialer.dlq",
 		MaxDeliveries:    3,
 		BaseBackoff:      5 * time.Millisecond,
 	})

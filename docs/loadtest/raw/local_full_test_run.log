@@ -257,4 +257,4 @@
 {"time":"2026-11-18T11:57:32.404364+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
 --- PASS: TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry (0.42s)
 PASS
-ok  	github.com/yoohooshantanu/dialpulse/tests	14.633s
+ok  	github.com/yoohooshantanu/predictive-dialer/tests	14.633s

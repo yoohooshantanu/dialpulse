@@ -12,13 +12,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/yoohooshantanu/dialpulse/internal/dnc"
-	"github.com/yoohooshantanu/dialpulse/internal/logger"
-	"github.com/yoohooshantanu/dialpulse/internal/metrics"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
-	"github.com/yoohooshantanu/dialpulse/internal/pacer"
-	"github.com/yoohooshantanu/dialpulse/internal/storage"
-	"github.com/yoohooshantanu/dialpulse/internal/timezone"
+	"github.com/yoohooshantanu/predictive-dialer/internal/dnc"
+	"github.com/yoohooshantanu/predictive-dialer/internal/logger"
+	"github.com/yoohooshantanu/predictive-dialer/internal/metrics"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/pacer"
+	"github.com/yoohooshantanu/predictive-dialer/internal/storage"
+	"github.com/yoohooshantanu/predictive-dialer/internal/timezone"
 )
 
 const (

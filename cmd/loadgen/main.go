@@ -19,9 +19,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 
-	"github.com/yoohooshantanu/dialpulse/internal/model"
-	"github.com/yoohooshantanu/dialpulse/internal/queue"
-	"github.com/yoohooshantanu/dialpulse/internal/storage"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/queue"
+	"github.com/yoohooshantanu/predictive-dialer/internal/storage"
 )
 
 type Config struct {
@@ -112,7 +112,7 @@ func main() {
 	flag.IntVar(&cfg.Workers, "workers", 2, "Number of concurrent claiming workers")
 	flag.IntVar(&cfg.NumLeads, "leads", 2000, "Number of leads to seed")
 	flag.IntVar(&cfg.BatchSize, "batch-size", 50, "Batch size for claiming")
-	flag.StringVar(&cfg.DatabaseURL, "db-url", "postgres://postgres:password@localhost:5432/dialpulse_test?sslmode=disable", "PostgreSQL connection URL")
+	flag.StringVar(&cfg.DatabaseURL, "db-url", "postgres://postgres:password@localhost:5432/predictive_dialer_test?sslmode=disable", "PostgreSQL connection URL")
 	flag.StringVar(&cfg.NATSURL, "nats-url", "nats://localhost:4222", "NATS connection URL")
 	flag.StringVar(&cfg.CampaignID, "campaign", "camp-load-1", "Campaign ID")
 	flag.BoolVar(&cfg.Tiny, "tiny", false, "Run tiny self-check (500 leads)")
@@ -672,15 +672,15 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 
 	_, _ = pool.Exec(ctx, "SELECT pg_stat_statements_reset();")
 
-	cgroupStartUsage, _ := readCgroupUsage("dialpulse-postgres")
-	throttleStart, throttledTimeStart, _ := readCgroupThrottle("dialpulse-postgres")
+	cgroupStartUsage, _ := readCgroupUsage("predictive-dialer-postgres")
+	throttleStart, throttledTimeStart, _ := readCgroupThrottle("predictive-dialer-postgres")
 
 	var nc *nats.Conn
 	var js nats.JetStreamContext
 	var relay *queue.OutboxRelay
 	var consumer *queue.OutboxConsumer
 	var streamName = "DIALPULSE_EVENTS"
-	var consumerName = "dialpulse_outcome_worker"
+	var consumerName = "predictive_dialer_outcome_worker"
 
 	needsNATS := cfg.Scenario == "A_RELAY" || cfg.Scenario == "AB_NOOP" || cfg.Scenario == "AB"
 
@@ -700,7 +700,7 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 		_ = js.DeleteStream(streamName)
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:       streamName,
-			Subjects:   []string{"dialpulse.events.>", "dialpulse.dlq.>"},
+			Subjects:   []string{"predictive_dialer.events.>", "predictive_dialer.dlq.>"},
 			Storage:    nats.MemoryStorage,
 			Duplicates: 30 * time.Second,
 			MaxAge:     5 * time.Minute,
@@ -722,7 +722,7 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 			consumerCfg := queue.DefaultOutboxConsumerConfig()
 			consumerCfg.ConsumerName = consumerName
 			consumerCfg.StreamName = streamName
-			consumerCfg.SubjectFilter = "dialpulse.events.>"
+			consumerCfg.SubjectFilter = "predictive_dialer.events.>"
 
 			var consumerHandler queue.ConsumerTxHandler
 			if cfg.Scenario == "AB_NOOP" {
@@ -768,7 +768,7 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 						COUNT(*) FILTER (WHERE state = 'active'),
 						COUNT(*) FILTER (WHERE wait_event_type = 'Lock')
 					FROM pg_stat_activity 
-					WHERE datname = 'dialpulse_test';
+					WHERE datname = 'predictive_dialer_test';
 				`).Scan(&activeConns, &lockWaits)
 
 				if int32(activeConns) > atomic.LoadInt32(&maxActiveConns) {
@@ -782,7 +782,7 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 				rows, err := pool.Query(ctx, `
 					SELECT wait_event_type, wait_event, COUNT(*) 
 					FROM pg_stat_activity 
-					WHERE wait_event_type IS NOT NULL AND datname = 'dialpulse_test'
+					WHERE wait_event_type IS NOT NULL AND datname = 'predictive_dialer_test'
 					GROUP BY wait_event_type, wait_event;
 				`)
 				if err == nil {
@@ -810,7 +810,7 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 
 				if tickCount%5 == 0 {
 					dockerStatsAttempted.Add(1)
-					cpu, ok := sampleDockerCPUCounted("dialpulse-postgres")
+					cpu, ok := sampleDockerCPUCounted("predictive-dialer-postgres")
 					if ok {
 						dockerStatsTaken.Add(1)
 						if cpu > maxCPU {
@@ -969,8 +969,8 @@ func runBenchmark(ctx context.Context, pool *pgxpool.Pool, repo *storage.Postgre
 	close(stopMonitor)
 	monitorWg.Wait()
 
-	cgroupEndUsage, _ := readCgroupUsage("dialpulse-postgres")
-	throttleEnd, throttledTimeEnd, _ := readCgroupThrottle("dialpulse-postgres")
+	cgroupEndUsage, _ := readCgroupUsage("predictive-dialer-postgres")
+	throttleEnd, throttledTimeEnd, _ := readCgroupThrottle("predictive-dialer-postgres")
 	var cgroupMeanCPU float64
 	if benchDuration.Nanoseconds() > 0 && cgroupEndUsage > cgroupStartUsage {
 		cgroupMeanCPU = (float64(cgroupEndUsage-cgroupStartUsage) / float64(benchDuration.Nanoseconds())) * 100.0

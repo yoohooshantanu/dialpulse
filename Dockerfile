@@ -12,17 +12,17 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-s -w" \
-    -o /dialpulse \
+    -o /predictive-dialer \
     ./cmd/server
 
 # Stage 2: Minimal runtime image
 FROM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /dialpulse /dialpulse
+COPY --from=builder /predictive-dialer /predictive-dialer
 
 EXPOSE 8086
 
 ENV PORT=8086
 
-ENTRYPOINT ["/dialpulse"]
+ENTRYPOINT ["/predictive-dialer"]

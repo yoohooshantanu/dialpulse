@@ -1,4 +1,4 @@
--- DialPulse Migration 002: Transactional Outbox, Downstream Idempotency, and Outcome Aggregates
+-- PredictiveDialer Migration 002: Transactional Outbox, Downstream Idempotency, and Outcome Aggregates
 
 CREATE TABLE IF NOT EXISTS outbox_events (
     id VARCHAR(128) PRIMARY KEY,

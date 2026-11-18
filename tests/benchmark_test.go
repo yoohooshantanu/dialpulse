@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/yoohooshantanu/dialpulse/internal/dnc"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
-	"github.com/yoohooshantanu/dialpulse/internal/pacer"
+	"github.com/yoohooshantanu/predictive-dialer/internal/dnc"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/pacer"
 )
 
 func BenchmarkDNCBloomFilterLookup(b *testing.B) {

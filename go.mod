@@ -1,4 +1,4 @@
-module github.com/yoohooshantanu/dialpulse
+module github.com/yoohooshantanu/predictive-dialer
 
 go 1.23.0
 

@@ -2,6 +2,6 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
-  - job_name: "dialpulse"
+  - job_name: "predictive-dialer"
     static_configs:
-      - targets: ["dialpulse:8086"]
+      - targets: ["predictive-dialer:8086"]

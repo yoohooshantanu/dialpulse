@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
-	"github.com/yoohooshantanu/dialpulse/internal/logger"
-	"github.com/yoohooshantanu/dialpulse/internal/model"
+	"github.com/yoohooshantanu/predictive-dialer/internal/logger"
+	"github.com/yoohooshantanu/predictive-dialer/internal/model"
 )
 
 // ConsumerTxHandler abstracts business side-effects that execute inside the same
@@ -52,10 +52,10 @@ func (h *CampaignOutcomeAggregator) HandleEventTx(ctx context.Context, tx pgx.Tx
 
 // OutboxConsumerConfig configures durable pull consumer retry, backoff, and DLQ routing.
 type OutboxConsumerConfig struct {
-	ConsumerName     string        // Durable consumer name, e.g. "dialpulse_outcome_worker"
+	ConsumerName     string        // Durable consumer name, e.g. "predictive_dialer_outcome_worker"
 	StreamName       string        // JetStream stream, e.g. "DIALPULSE_EVENTS"
-	SubjectFilter    string        // JetStream subject filter, e.g. "dialpulse.events.>"
-	DLQSubjectPrefix string        // DLQ subject prefix, e.g. "dialpulse.dlq"
+	SubjectFilter    string        // JetStream subject filter, e.g. "predictive_dialer.events.>"
+	DLQSubjectPrefix string        // DLQ subject prefix, e.g. "predictive_dialer.dlq"
 	MaxDeliveries    int           // Maximum delivery attempts before poison message is routed to DLQ (default: 3)
 	AckWait          time.Duration // JetStream AckWait (default: 10s, must be > HandlerTimeout)
 	HandlerTimeout   time.Duration // Execution timeout for handler (default: 2s)
@@ -65,10 +65,10 @@ type OutboxConsumerConfig struct {
 
 func DefaultOutboxConsumerConfig() OutboxConsumerConfig {
 	return OutboxConsumerConfig{
-		ConsumerName:     "dialpulse_outcome_worker",
+		ConsumerName:     "predictive_dialer_outcome_worker",
 		StreamName:       "DIALPULSE_EVENTS",
-		SubjectFilter:    "dialpulse.events.>",
-		DLQSubjectPrefix: "dialpulse.dlq",
+		SubjectFilter:    "predictive_dialer.events.>",
+		DLQSubjectPrefix: "predictive_dialer.dlq",
 		MaxDeliveries:    3,
 		AckWait:          10 * time.Second,
 		HandlerTimeout:   2 * time.Second,
@@ -121,7 +121,7 @@ func NewOutboxConsumer(pool *pgxpool.Pool, js nats.JetStreamContext, handler Con
 		cfg.MaxBackoff = 1 * time.Second
 	}
 	if cfg.DLQSubjectPrefix == "" {
-		cfg.DLQSubjectPrefix = "dialpulse.dlq"
+		cfg.DLQSubjectPrefix = "predictive_dialer.dlq"
 	}
 
 	return &OutboxConsumer{
