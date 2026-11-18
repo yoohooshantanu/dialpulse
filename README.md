@@ -452,7 +452,7 @@ A claiming rate of ~100 leads/s on 2.0 vCPUs represents **20 ms of container CPU
   * Claiming is batch-amortized (0.02 round-trips per lead), whereas call recording occurs individually per lead.
 
 #### 2. Wall Time Budget Decomposition per Lead Cycle (Summing to Measured Mean):
-In queuing and transaction accounting, arithmetic means sum linearly ($E[A+B] = E[A] + E[B]$), whereas medians/percentiles do not. Every lead lifecycle executes **11.02 network round-trips and 12 SQL statements**:
+In queuing and transaction accounting, arithmetic means sum linearly ($E[A+B] = E[A] + E[B]$), whereas medians/percentiles do not. Every lead lifecycle executes **11.02 network round-trips across 11 distinct SQL statements** (0.02 batch claim + 5 attempt start statements + 6 outcome transaction statements):
 1. `repo.ClaimPendingLeads` (1 batch query per 50 leads): $1 / 50 = \mathbf{0.02\text{ round-trips}}$.
 2. `repo.RecordAttemptStart` (5 statements, **5 round-trips**):
    - `BEGIN` (1 RT)
@@ -483,7 +483,7 @@ $$\begin{aligned}
 #### 3. Single-Round-Trip CTE Prototype (`-one-round-trip=true`):
 To prove that individual network round trips dominate caller latency, a single-round-trip CTE transaction collapsing attempt recording, lead disposition update, and outbox event publishing into 1 network round-trip was benchmarked at $W=1$ (backed by [`docs/loadtest/raw/cte_prototype.log`](docs/loadtest/raw/cte_prototype.log)):
 * **Standard Multi-Round-Trip Path ($W=1$)**: Record p50 = **54.8 ms**, Total p50 = **55.9 ms**, Throughput = **12.9 leads/s**
-* **Single-Round-Trip CTE Path ($W=1$)**: Record p50 = **10.0 ms**, Total p50 = **11.1 ms**, Throughput = **72.1 leads/s** (**5.6x throughput speedup**).
+* **Single-Round-Trip CTE Path ($W=1$)**: Record p50 = **10.0 ms**, Total p50 = **11.1 ms**, Throughput = **72.1 leads/s** (**5.6x throughput speedup at $W=1$** over the 12.9 leads/s standard multi-round-trip baseline; backed by [`docs/loadtest/raw/cte_prototype.log`](docs/loadtest/raw/cte_prototype.log)).
 * *pg_stat_statements*: Inside Postgres, the single CTE query executed in **1.54 ms**. The remaining 8.5 ms was the single WSL2 round-trip ping + WAL commit flush.
 
 #### 4. Container Cgroup CPU & Throttling:
@@ -496,7 +496,8 @@ To prove that individual network round trips dominate caller latency, a single-r
 
 ### 5. Scenario AB Cost Breakdown: Back-to-Back Ablation ($W=8$, 3 Runs Each)
 
-Executed back-to-back at $W=8$ (3 runs each, 2,000 leads per run) using loadgen binary `3a06eef`. Backed by raw log [`docs/loadtest/raw/table5_ablation.log`](docs/loadtest/raw/table5_ablation.log). Values reported as **`[min - max]` ranges across 3 runs**:
+*Run Date: 2026-11-18 | Commit: `3a06eef` (loadgen v2 with cgroup / wait_event telemetry)*  
+Executed back-to-back at $W=8$ (3 runs each, 2,000 leads per run) under PostgreSQL 16 (`--cpus=2.0`). Backed by verbatim raw logs in [`docs/loadtest/raw/table5_ablation.log`](docs/loadtest/raw/table5_ablation.log). All values reported as **`[min - max]` ranges across 3 runs**:
 
 | Configuration ($W=8$) | Max Claim-and-Record Rate (leads/s) | Total Cycle p50 (ms) | Amortized Claim p50 (ms) | Batch Claim p50 (ms) | Record p50 (ms) | Cgroup CPU% (2 CPU Cap) | Dead Tuples (`n_dead_tup`) | Autovacuum Runs | Primary Bottleneck |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -619,7 +620,7 @@ Mutual exclusion and idempotency are enforced at two boundaries:
 
 1. **Single-Laptop Host Saturation**: The Go load generator, PostgreSQL container, and NATS JetStream broker share a single physical CPU (AMD Ryzen 5) on Windows. CPU scheduling contention, background Windows services, and context-switching jitter inherently limit absolute ceiling throughput compared to multi-node bare-metal Linux clusters.
 2. **Docker-on-Windows & WSL2 Virtual Socket RTT (3–6 ms)**: Database connections cross the Windows-to-WSL2 hypervisor bridge (`gvproxy`/named pipe), introducing an irreducible **3–6 ms round-trip latency per query** (mean ping: 3.28 ms idle, 5.59–9.20 ms under load). Across 11 round-trips per lead, virtual socket serialization accounts for **60+ ms of cycle time**.
-3. **Seed Distribution Artifacts**: The 1M-lead dataset was seeded via PostgreSQL `COPY` in 10,000-lead batches where `created_at` timestamps were assigned at batch-construction time. While `priority` was uniformly distributed (`[0..9]`), identical `created_at` values within each 10k batch collapsed index tie-breaking to heap row physical storage order (TID), avoiding pathological random-seek B-tree fragmentation.
+3. **Seed Distribution Artifacts**: On the 1,000,000-lead table, `SELECT count(DISTINCT created_at) FROM leads;` yields exactly **5,652 distinct timestamps** across the 100 `COPY` batches of 10,000 rows (raw output committed in [`docs/loadtest/raw/distinct_created_at.txt`](docs/loadtest/raw/distinct_created_at.txt)). While `time.Now().UTC()` is evaluated inside the loop, multiple adjacent rows share identical microsecond timestamps (~177 leads per distinct timestamp tick). Within each `(priority, created_at)` bucket, index tie-breaking falls back to physical heap storage order (TID), clustering adjacent index leaf tuples.
 4. **Unified Claim Query Still Shipped**: Migration 001 and the production repository (`internal/storage/postgres.go`) still ship the unified claim query combining `status = 'QUEUED'` with an `OR` on expired `DIALING` leases. While this query guarantees absolute correctness and zero lease starvation on moderate tables (<100k leads), scaling beyond 500k leads requires Migration 003.
 5. **No DRAFT or Retry Handling in Naive Partial Path**: The split fast path benchmarked in `cmd/loadgen` (`idx_leads_partial_queued`) strictly indexes `WHERE status = 'QUEUED'`. It deliberately ignores `DRAFT` leads and leaves retry backoff scheduling (`next_attempt_at`) to a secondary query. A production rollout of Migration 003 must either broaden the partial index predicate or run a decoupled background reconciliation worker.
 6. **No Carrier Telephony Latency**: This harness benchmarks database transaction and queuing throughput only ("Max Claim-and-Record Rate with No Dial Time"). Real-world predictive campaigns experience 3–15 seconds of carrier trunk ring latency, meaning a production system with 100 leads/sec database throughput can sustain thousands of concurrently ringing outbound calls.
@@ -642,7 +643,7 @@ Mutual exclusion and idempotency are enforced at two boundaries:
 #### 2. What Surprised Me Most:
 1. **The Sheer Cost of Network Round-Trips vs Database Execution**:
    - I expected database query execution (`UPDATE`, `INSERT`, `FOR UPDATE`) to dominate the 90 ms cycle time.
-   - *Surprise*: `pg_stat_statements` revealed that PostgreSQL actually spent only **14.2 ms executing all 12 SQL queries combined**. Over **60 ms (66% of wall time)** was spent simply traversing the Windows-to-WSL2 virtual Ethernet interface across 11 network round-trips! Collapsing this to a single-round-trip CTE transaction dropped record latency from 54.8 ms down to 10.0 ms, yielding an immediate **5.6x throughput speedup (72.1 leads/s)**.
+   - *Surprise*: `pg_stat_statements` revealed that PostgreSQL actually spent only **14.2 ms executing all 11 SQL queries combined**. Over **60 ms (66% of wall time)** was spent simply traversing the Windows-to-WSL2 virtual Ethernet interface across 11 network round-trips! Collapsing this to a single-round-trip CTE transaction dropped record latency from 54.8 ms down to 10.0 ms, yielding an immediate **5.6x throughput speedup at $W=1$ (72.1 leads/s vs 12.9 leads/s baseline)**.
 2. **Buffer Contention on "Clean" Composite Indexes**:
    - I expected the composite index `(campaign_id, priority DESC, created_at ASC)` to scale linearly because it avoids disk sorting.
    - *Surprise*: As the table drained, completed non-QUEUED rows remained at the head of the B-tree. At $W=32$, all 32 workers thrashed on the same root/leaf index pages, discarding **24,620 rows per query** and ballooning claim latency from 1.8 ms to 38.5 ms. Only a partial index (`idx_leads_partial_queued`) cured this head-of-line index cache thrashing.

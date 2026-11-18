@@ -276,6 +276,8 @@ func run1MDatasetExperiment(ctx context.Context, pool *pgxpool.Pool, repo *stora
 			rows := make([][]interface{}, batchSize)
 			for i := 0; i < batchSize; i++ {
 				idx := inserted + i
+				// Note: time.Now().UTC() is called per row inside the loop. Due to fast CPU clock resolution (~1-100us per call),
+				// 1M leads produce ~5,652 distinct timestamps across the 100 CopyFrom batches (~177 leads per distinct timestamp tick).
 				rows[i] = []interface{}{
 					fmt.Sprintf("lead-1m-%07d", idx),
 					cfg.CampaignID,
