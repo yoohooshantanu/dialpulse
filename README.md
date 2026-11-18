@@ -615,16 +615,43 @@ Mutual exclusion and idempotency are enforced at two boundaries:
 
 ---
 
-### 9. Honest Limitations
+### 9. Honest Limitations & Architectural Boundary Conditions
 
-1. **Co-located Architecture**: The Go load generator, PostgreSQL container, and NATS broker were executed on the same physical host. CPU scheduling, Docker WSL2 virtualization boundaries, and context switching introduce variance not present in dedicated multi-node cloud environments.
-2. **Docker-on-Windows Hypervisor Overhead**: Networking traverses the WSL2 virtual Ethernet adapter and gvproxy translation layer, adding approximately 3.5–4.7 ms of baseline socket latency to every PostgreSQL transaction round-trip (verified via 1,000-sample `SELECT 1` ping benchmark).
-3. **Telemetry Granularity**: Docker container CPU was sampled at 1.0s intervals with an 800 ms timeout to prevent named pipe deadlocks, smoothing out micro-bursts of sub-millisecond CPU spikes.
-4. **No Carrier Telephony Latency**: This benchmark measures database claim-and-record limits only; actual carrier dialing involves 3–15 seconds of PSTN trunk ring time per attempt.
+1. **Single-Laptop Host Saturation**: The Go load generator, PostgreSQL container, and NATS JetStream broker share a single physical CPU (AMD Ryzen 5) on Windows. CPU scheduling contention, background Windows services, and context-switching jitter inherently limit absolute ceiling throughput compared to multi-node bare-metal Linux clusters.
+2. **Docker-on-Windows & WSL2 Virtual Socket RTT (3–6 ms)**: Database connections cross the Windows-to-WSL2 hypervisor bridge (`gvproxy`/named pipe), introducing an irreducible **3–6 ms round-trip latency per query** (mean ping: 3.28 ms idle, 5.59–9.20 ms under load). Across 11 round-trips per lead, virtual socket serialization accounts for **60+ ms of cycle time**.
+3. **Seed Distribution Artifacts**: The 1M-lead dataset was seeded via PostgreSQL `COPY` in 10,000-lead batches where `created_at` timestamps were assigned at batch-construction time. While `priority` was uniformly distributed (`[0..9]`), identical `created_at` values within each 10k batch collapsed index tie-breaking to heap row physical storage order (TID), avoiding pathological random-seek B-tree fragmentation.
+4. **Unified Claim Query Still Shipped**: Migration 001 and the production repository (`internal/storage/postgres.go`) still ship the unified claim query combining `status = 'QUEUED'` with an `OR` on expired `DIALING` leases. While this query guarantees absolute correctness and zero lease starvation on moderate tables (<100k leads), scaling beyond 500k leads requires Migration 003.
+5. **No DRAFT or Retry Handling in Naive Partial Path**: The split fast path benchmarked in `cmd/loadgen` (`idx_leads_partial_queued`) strictly indexes `WHERE status = 'QUEUED'`. It deliberately ignores `DRAFT` leads and leaves retry backoff scheduling (`next_attempt_at`) to a secondary query. A production rollout of Migration 003 must either broaden the partial index predicate or run a decoupled background reconciliation worker.
+6. **No Carrier Telephony Latency**: This harness benchmarks database transaction and queuing throughput only ("Max Claim-and-Record Rate with No Dial Time"). Real-world predictive campaigns experience 3–15 seconds of carrier trunk ring latency, meaning a production system with 100 leads/sec database throughput can sustain thousands of concurrently ringing outbound calls.
 
 ---
 
-### 10. Reproduction Commands
+### 10. Pre-Run Predictions & Post-Run Surprises (Written Post-Experiment)
+
+> [!NOTE]
+> *Label*: The following reflections and retrospective analysis are recorded in my own words **after having observed the empirical benchmark results**, identifying what hypotheses were confirmed and what experimental findings were genuinely surprising.
+
+#### 1. What I Predicted (and How it Held Up):
+* **Hypothesis 1 (Index Degradation at Scale)**: I predicted that adding the partial index `WHERE status = 'QUEUED'` to the unified query would immediately fix claiming at 1,000,000 leads.
+  * *Verdict*: **Completely Refuted**. I overlooked that PostgreSQL’s planner cannot use a partial index covering only one branch of an `OR` condition (`OR (status = 'DIALING' ...)`) without a `BitmapOr` scan, which is fundamentally disallowed under `FOR UPDATE SKIP LOCKED`. PostgreSQL fell back to a catastrophic sequential scan and external merge sort spilling 46 MB to disk.
+* **Hypothesis 2 (Container CPU Saturation at High Concurrency)**: I predicted that ramping workers from $W=1$ to $W=32$ would fully peg the 2 assigned vCPUs at 200%, creating CPU starvation as the primary bottleneck.
+  * *Verdict*: **Partially Refuted**. PostgreSQL container cgroup CPU peaked at only 70%–85% at $W=8$ (about ~0.8 cores). Even at $W=32$, the system was not CPU-bound; the database spent **68.4% of its backend time waiting on `ClientRead`**, stalled waiting for the Go process to issue the next sequential SQL statement over the Docker/WSL2 hypervisor boundary.
+* **Hypothesis 3 (Pool Exhaustion)**: I predicted that running 32 workers with multi-statement transactions against a pool of 20 connections would cause high `EmptyAcquireCount` and lock contention.
+  * *Verdict*: **Confirmed False**. `poolStat.EmptyAcquireCount()` remained strictly `0` across all steps because workers held connections only for active transaction spans, disproving connection pool starvation.
+
+#### 2. What Surprised Me Most:
+1. **The Sheer Cost of Network Round-Trips vs Database Execution**:
+   - I expected database query execution (`UPDATE`, `INSERT`, `FOR UPDATE`) to dominate the 90 ms cycle time.
+   - *Surprise*: `pg_stat_statements` revealed that PostgreSQL actually spent only **14.2 ms executing all 12 SQL queries combined**. Over **60 ms (66% of wall time)** was spent simply traversing the Windows-to-WSL2 virtual Ethernet interface across 11 network round-trips! Collapsing this to a single-round-trip CTE transaction dropped record latency from 54.8 ms down to 10.0 ms, yielding an immediate **5.6x throughput speedup (72.1 leads/s)**.
+2. **Buffer Contention on "Clean" Composite Indexes**:
+   - I expected the composite index `(campaign_id, priority DESC, created_at ASC)` to scale linearly because it avoids disk sorting.
+   - *Surprise*: As the table drained, completed non-QUEUED rows remained at the head of the B-tree. At $W=32$, all 32 workers thrashed on the same root/leaf index pages, discarding **24,620 rows per query** and ballooning claim latency from 1.8 ms to 38.5 ms. Only a partial index (`idx_leads_partial_queued`) cured this head-of-line index cache thrashing.
+3. **tmpfs Halving Tail Latency**:
+   - Running PostgreSQL on a RAM disk (`--tmpfs /var/lib/postgresql/data:rw`) did not drastically increase median throughput (61.6–66.9 leads/s vs ~50–60 on disk), but it **halved p99 cycle latency from 760 ms to 296 ms**. This proved that tail latency spikes under load were caused by periodic disk WAL sync flushes stalling PostgreSQL backends.
+
+---
+
+### 11. Reproduction Commands
 
 ```bash
 # 1. Start isolated PostgreSQL with resource caps and NATS JetStream
