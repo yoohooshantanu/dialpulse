@@ -1,0 +1,260 @@
+﻿=== RUN   TestDNCBloomFilter
+--- PASS: TestDNCBloomFilter (0.00s)
+=== RUN   TestTimezoneGovernor
+--- PASS: TestTimezoneGovernor (0.00s)
+=== RUN   TestPredictivePacerCalculation
+--- PASS: TestPredictivePacerCalculation (0.00s)
+=== RUN   TestCampaignPriorityDispatching
+{"time":"2026-11-18T11:57:18.7532311+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_priority_test","accepted":3,"duplicates_skipped":0}
+--- PASS: TestCampaignPriorityDispatching (0.01s)
+=== RUN   TestCampaignExecutionLifecycle
+{"time":"2026-11-18T11:57:18.7581488+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_exec_test","accepted":4,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:18.8090119+05:30","level":"WARN","msg":"dial_routed_to_dlq_dnc","lead_id":"lead_7fe17491","phone":"2125559999"}
+{"time":"2026-11-18T11:57:18.8197244+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_b8cb635a","campaign_id":"camp_exec_test"}
+{"time":"2026-11-18T11:57:18.8197244+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_860b75ef","campaign_id":"camp_exec_test"}
+{"time":"2026-11-18T11:57:18.8226574+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_f85e644b","campaign_id":"camp_exec_test"}
+{"time":"2026-11-18T11:57:18.9586942+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_exec_test"}
+--- PASS: TestCampaignExecutionLifecycle (0.20s)
+=== RUN   TestCurfewHoldoffNoBusySpinAndCleanShutdown
+{"time":"2026-11-18T11:57:18.9611045+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_holdoff_test","accepted":1,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.0820625+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_holdoff_test"}
+--- PASS: TestCurfewHoldoffNoBusySpinAndCleanShutdown (0.12s)
+=== RUN   TestIdempotentLeadIngestionDeduplication
+{"time":"2026-11-18T11:57:19.0830554+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_idempotent_test","accepted":2,"duplicates_skipped":2}
+--- PASS: TestIdempotentLeadIngestionDeduplication (0.00s)
+=== RUN   TestDeadLetterQueueRouting
+{"time":"2026-11-18T11:57:19.0830554+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_dlq_test","accepted":2,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.1336518+05:30","level":"WARN","msg":"dial_routed_to_dlq_dnc","lead_id":"lead_dnc_fail","phone":"2125550099"}
+{"time":"2026-11-18T11:57:19.1574517+05:30","level":"WARN","msg":"lead_routed_to_dlq_exhausted","lead_id":"lead_exhaust_fail","attempts":1}
+{"time":"2026-11-18T11:57:19.2346335+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_dlq_test"}
+--- PASS: TestDeadLetterQueueRouting (0.15s)
+=== RUN   TestMultiCampaignConcurrencyIsolation
+{"time":"2026-11-18T11:57:19.2346335+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_A","accepted":2,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.2346335+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_B","accepted":2,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.2346335+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_C","accepted":2,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.2346335+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_D","accepted":2,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.2346335+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_concurrent_E","accepted":2,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.2989712+05:30","level":"INFO","msg":"lead_retry_scheduled","lead_id":"lead_c64a8723","attempt":1,"retry_at":"2026-11-18T06:42:49.845915375Z"}
+{"time":"2026-11-18T11:57:19.3005112+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_b128acd2","campaign_id":"camp_concurrent_C"}
+{"time":"2026-11-18T11:57:19.3015743+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_0e13baf2","campaign_id":"camp_concurrent_A"}
+{"time":"2026-11-18T11:57:19.3015743+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_57f3bf7d","campaign_id":"camp_concurrent_A"}
+{"time":"2026-11-18T11:57:19.3029041+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_a704b5e5","campaign_id":"camp_concurrent_B"}
+{"time":"2026-11-18T11:57:19.3029041+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_0125a106","campaign_id":"camp_concurrent_E"}
+{"time":"2026-11-18T11:57:19.305924+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_7dcb6673","campaign_id":"camp_concurrent_D"}
+{"time":"2026-11-18T11:57:19.305924+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_807a1967","campaign_id":"camp_concurrent_C"}
+{"time":"2026-11-18T11:57:19.305924+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_ae55df23","campaign_id":"camp_concurrent_B"}
+{"time":"2026-11-18T11:57:19.30983+05:30","level":"INFO","msg":"lead_retry_scheduled","lead_id":"lead_d0b44474","attempt":1,"retry_at":"2026-11-18T06:43:37.928848008Z"}
+{"time":"2026-11-18T11:57:19.3369149+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_A"}
+{"time":"2026-11-18T11:57:19.3369149+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_B"}
+{"time":"2026-11-18T11:57:19.3369149+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_C"}
+{"time":"2026-11-18T11:57:19.3369149+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_D"}
+{"time":"2026-11-18T11:57:19.3369149+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_concurrent_E"}
+--- PASS: TestMultiCampaignConcurrencyIsolation (0.10s)
+=== RUN   TestBusyCallRetryBackoff
+{"time":"2026-11-18T11:57:19.3376792+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_retry_test","accepted":1,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.4105573+05:30","level":"INFO","msg":"lead_retry_scheduled","lead_id":"lead_busy_retry","attempt":1,"retry_at":"2026-11-18T06:43:34.3756427Z"}
+{"time":"2026-11-18T11:57:19.4581247+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_retry_test"}
+--- PASS: TestBusyCallRetryBackoff (0.12s)
+=== RUN   TestStoragePersistenceAndIdempotency
+--- PASS: TestStoragePersistenceAndIdempotency (0.00s)
+=== RUN   TestInFlightDialLimiting
+{"time":"2026-11-18T11:57:19.4581247+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_inflight_test","accepted":11,"duplicates_skipped":9}
+{"time":"2026-11-18T11:57:19.5786585+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_inflight_test"}
+--- PASS: TestInFlightDialLimiting (0.12s)
+=== RUN   TestPacerSingleOutcomeAccounting
+{"time":"2026-11-18T11:57:19.5786585+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_accounting_test","accepted":3,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.6465788+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_755be17b","campaign_id":"camp_accounting_test"}
+{"time":"2026-11-18T11:57:19.6465788+05:30","level":"WARN","msg":"call_abandoned","lead_id":"lead_a0f2f39c","campaign_id":"camp_accounting_test"}
+{"time":"2026-11-18T11:57:19.651615+05:30","level":"WARN","msg":"call_abandoned","lead_id":"lead_57986305","campaign_id":"camp_accounting_test"}
+{"time":"2026-11-18T11:57:19.7289332+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_accounting_test"}
+--- PASS: TestPacerSingleOutcomeAccounting (0.15s)
+=== RUN   TestSynchronousIngestRejectsOnStorageFailure
+{"time":"2026-11-18T11:57:19.7289332+05:30","level":"ERROR","msg":"lead_ingest_db_failed","campaign_id":"camp_fail_test","error":"simulated postgres connection failure / deadlock"}
+--- PASS: TestSynchronousIngestRejectsOnStorageFailure (0.00s)
+=== RUN   TestDatabaseDuplicateRejectedAfterRestart
+{"time":"2026-11-18T11:57:19.7294445+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_restart_idempotency","accepted":1,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.7294445+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_restart_idempotency","accepted":0,"duplicates_skipped":1}
+--- PASS: TestDatabaseDuplicateRejectedAfterRestart (0.00s)
+=== RUN   TestLivePostgresRestartIdempotency
+{"time":"2026-11-18T11:57:19.8391035+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+{"time":"2026-11-18T11:57:19.9364695+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_live_pg_66abad69","accepted":1,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:19.9406727+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_live_pg_66abad69","accepted":0,"duplicates_skipped":1}
+--- PASS: TestLivePostgresRestartIdempotency (0.21s)
+=== RUN   TestDistributedCompetingWorkersClaiming
+--- PASS: TestDistributedCompetingWorkersClaiming (0.01s)
+=== RUN   TestServerStartupCampaignRecovery
+--- PASS: TestServerStartupCampaignRecovery (0.00s)
+=== RUN   TestAtomicTransactionalOutcomePersistence
+--- PASS: TestAtomicTransactionalOutcomePersistence (0.00s)
+=== RUN   TestTickDistributedClaimingIntegration
+{"time":"2026-11-18T11:57:20.0112898+05:30","level":"INFO","msg":"call_connected","lead_id":"tick_lead_1","campaign_id":"camp_tick_claim_test"}
+{"time":"2026-11-18T11:57:20.0226313+05:30","level":"INFO","msg":"call_connected","lead_id":"tick_lead_2","campaign_id":"camp_tick_claim_test"}
+{"time":"2026-11-18T11:57:20.0983064+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_tick_claim_test"}
+--- PASS: TestTickDistributedClaimingIntegration (0.15s)
+=== RUN   TestLivePostgresDistributedClaimingAndLeaseRecovery
+{"time":"2026-11-18T11:57:20.1396575+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestLivePostgresDistributedClaimingAndLeaseRecovery (0.20s)
+=== RUN   TestLivePostgresCompetingEnginesSchedulerDispatch
+{"time":"2026-11-18T11:57:20.3405718+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+{"time":"2026-11-18T11:57:20.6001103+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_22","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.6027139+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_21","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.6049846+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_20","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.6419804+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_23","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.6526588+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_19","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.6933762+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_18","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.7388271+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_17","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.7409594+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_16","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.7543829+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_15","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.7903571+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_14","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.7919522+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_13","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.830549+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_12","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.9006802+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_10","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.9006802+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_11","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.9311698+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_08","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.9311698+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_09","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:20.9388742+05:30","level":"WARN","msg":"call_abandoned","lead_id":"live_eng_07","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.0429738+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_05","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.0452892+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_06","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.0836914+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_03","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.0836914+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_02","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.0842869+05:30","level":"WARN","msg":"call_abandoned","lead_id":"live_eng_04","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.1944797+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_01","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.1960605+05:30","level":"INFO","msg":"call_connected","lead_id":"live_eng_00","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.2975776+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_engine_compete_1884d183"}
+{"time":"2026-11-18T11:57:21.2975776+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_engine_compete_1884d183"}
+--- PASS: TestLivePostgresCompetingEnginesSchedulerDispatch (1.01s)
+=== RUN   TestLivePostgresDNCPersistenceAndCrossInstanceScreening
+{"time":"2026-11-18T11:57:21.344975+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+{"time":"2026-11-18T11:57:21.6099368+05:30","level":"WARN","msg":"dial_routed_to_dlq_dnc","lead_id":"lead_dnc_cross","phone":"8005551317"}
+{"time":"2026-11-18T11:57:21.6459027+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_dnc_cross_f72be3d7"}
+--- PASS: TestLivePostgresDNCPersistenceAndCrossInstanceScreening (0.34s)
+=== RUN   TestLivePostgresDurableAttemptStartPersistenceCrashSafety
+{"time":"2026-11-18T11:57:21.7035266+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestLivePostgresDurableAttemptStartPersistenceCrashSafety (0.25s)
+=== RUN   TestAttemptStartFailureAbortsCarrierDial
+{"time":"2026-11-18T11:57:21.9610105+05:30","level":"ERROR","msg":"failed_recording_attempt_start_aborting_dial","lead_id":"lead_abort_1","attempt_id":"c4237b49-3620-4624-8b7b-d307007003f4","error":"simulated postgres connection deadlock on attempt start"}
+{"time":"2026-11-18T11:57:22.0605891+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_abort_dial"}
+--- PASS: TestAttemptStartFailureAbortsCarrierDial (0.15s)
+=== RUN   TestDNCFailClosedOnDatabaseError
+{"time":"2026-11-18T11:57:22.1107157+05:30","level":"ERROR","msg":"dnc_check_failed_deferring_lead_fail_closed","lead_id":"lead_fail_closed_1","phone":"+14155558888","error":"simulated postgres timeout during dnc check"}
+{"time":"2026-11-18T11:57:22.2110148+05:30","level":"INFO","msg":"campaign_stopped","campaign_id":"camp_fail_closed_dnc"}
+--- PASS: TestDNCFailClosedOnDatabaseError (0.15s)
+=== RUN   TestTimezoneCurfewPersistentReschedule
+--- PASS: TestTimezoneCurfewPersistentReschedule (0.00s)
+=== RUN   TestAttemptCountingExactnessAndConsistency
+--- PASS: TestAttemptCountingExactnessAndConsistency (0.00s)
+=== RUN   TestDNCPersistenceAcrossRestart
+--- PASS: TestDNCPersistenceAcrossRestart (0.00s)
+=== RUN   TestRecordAttemptStartAffectedRowsValidation
+--- PASS: TestRecordAttemptStartAffectedRowsValidation (0.00s)
+=== RUN   TestLivePostgresRecordAttemptStartAffectedRowsValidation
+{"time":"2026-11-18T11:57:22.2528627+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestLivePostgresRecordAttemptStartAffectedRowsValidation (0.12s)
+=== RUN   TestLivePostgresDistributedLeaseFencingStaleWorkerRejected
+{"time":"2026-11-18T11:57:22.3765261+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestLivePostgresDistributedLeaseFencingStaleWorkerRejected (0.17s)
+=== RUN   TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease
+{"time":"2026-11-18T11:57:22.5222227+05:30","level":"WARN","msg":"stale_lease_detected_abandoning_local_lead","lead_id":"lead_queue_fencing_mem","attempt_id":"4ac7d5ac-bf7a-4d77-8169-052c080698b3","lease_token":"26673495-8bed-403f-953d-4d1d40be2752","error":"record_attempt_start: lease token mismatch for lead lead_queue_fencing_mem: current=d501259f-6b1b-4337-815e-01a76ae48d18, given=26673495-8bed-403f-953d-4d1d40be2752"}
+{"time":"2026-11-18T11:57:22.5222227+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_queue_fencing_mem","campaign_id":"camp_queue_fencing_mem"}
+--- PASS: TestQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease (0.06s)
+=== RUN   TestLivePostgresRescheduleLeadFencing
+{"time":"2026-11-18T11:57:22.6061499+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestLivePostgresRescheduleLeadFencing (0.11s)
+=== RUN   TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease
+{"time":"2026-11-18T11:57:22.7196919+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+{"time":"2026-11-18T11:57:22.8108464+05:30","level":"WARN","msg":"stale_lease_detected_abandoning_local_lead","lead_id":"lead_queue_live_011e2e7f","attempt_id":"e66d2498-d9ed-4d97-888c-b818089382fc","lease_token":"b55c330b-ebc0-4917-8464-d1c946f848c0","error":"stale lease token or invalid lead state: outcome rejected: record_attempt_start: expected 1 row updated for lead lead_queue_live_011e2e7f in DIALING status with active lease, got 0"}
+{"time":"2026-11-18T11:57:22.8499563+05:30","level":"INFO","msg":"call_connected","lead_id":"lead_queue_live_011e2e7f","campaign_id":"camp_queue_live_177ffd3d"}
+--- PASS: TestLivePostgresQueueLevelStaleWorkerCleanupDoesNotMutateReclaimedLease (0.29s)
+=== RUN   TestMemoryAttemptStartFailsOnExpiredLeaseBeforeReclamation
+--- PASS: TestMemoryAttemptStartFailsOnExpiredLeaseBeforeReclamation (0.00s)
+=== RUN   TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation
+{"time":"2026-11-18T11:57:23.0398578+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestLivePostgresAttemptStartFailsOnExpiredLeaseBeforeReclamation (0.30s)
+=== RUN   TestLivePostgresAttemptStartLockWaitExpiryRejection
+{"time":"2026-11-18T11:57:23.360098+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestLivePostgresAttemptStartLockWaitExpiryRejection (1.89s)
+=== RUN   TestTCPACurfewTableDriven
+=== RUN   TestTCPACurfewTableDriven/Arizona_602_summer_morning_dangerous_direction_(07:30_Phoenix)
+=== RUN   TestTCPACurfewTableDriven/Arizona_480_summer_morning_dangerous_direction_(07:30_Phoenix)
+=== RUN   TestTCPACurfewTableDriven/Arizona_623_summer_morning_dangerous_direction_(07:30_Phoenix)
+=== RUN   TestTCPACurfewTableDriven/Arizona_928_summer_morning_dangerous_direction_(07:30_Phoenix)
+=== RUN   TestTCPACurfewTableDriven/Arizona_602_summer_evening_allowed_(20:30_Phoenix_vs_21:30_Denver)
+=== RUN   TestTCPACurfewTableDriven/Arizona_928_summer_evening_prohibited_in_Navajo_Nation_(21:30_Navajo_vs_20:30_Phoenix)
+=== RUN   TestTCPACurfewTableDriven/Arizona_928_summer_evening_allowed_in_both_zones_(20:30_Navajo_and_19:30_Phoenix)
+=== RUN   TestTCPACurfewTableDriven/Arizona_928_summer_morning_allowed_in_both_zones_(09:30_Navajo_and_08:30_Phoenix)
+=== RUN   TestTCPACurfewTableDriven/Unknown_area_code_999_fails_closed
+=== RUN   TestTCPACurfewTableDriven/Unknown_area_code_000_fails_closed
+=== RUN   TestTCPACurfewTableDriven/El_Paso_915_morning_allowed_(08:30_MDT)
+=== RUN   TestTCPACurfewTableDriven/El_Paso_915_early_morning_prohibited_(07:30_MDT)
+=== RUN   TestTCPACurfewTableDriven/NY_212_standard_time_before_spring_forward_(07:00_EST)
+=== RUN   TestTCPACurfewTableDriven/NY_212_daylight_saving_time_after_spring_forward_(08:00_EDT)
+=== RUN   TestTCPACurfewTableDriven/NY_212_daylight_saving_time_before_fall_back_(08:00_EDT)
+=== RUN   TestTCPACurfewTableDriven/NY_212_standard_time_after_fall_back_(07:00_EST)
+--- PASS: TestTCPACurfewTableDriven (0.01s)
+    --- PASS: TestTCPACurfewTableDriven/Arizona_602_summer_morning_dangerous_direction_(07:30_Phoenix) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Arizona_480_summer_morning_dangerous_direction_(07:30_Phoenix) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Arizona_623_summer_morning_dangerous_direction_(07:30_Phoenix) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Arizona_928_summer_morning_dangerous_direction_(07:30_Phoenix) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Arizona_602_summer_evening_allowed_(20:30_Phoenix_vs_21:30_Denver) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Arizona_928_summer_evening_prohibited_in_Navajo_Nation_(21:30_Navajo_vs_20:30_Phoenix) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Arizona_928_summer_evening_allowed_in_both_zones_(20:30_Navajo_and_19:30_Phoenix) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Arizona_928_summer_morning_allowed_in_both_zones_(09:30_Navajo_and_08:30_Phoenix) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Unknown_area_code_999_fails_closed (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/Unknown_area_code_000_fails_closed (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/El_Paso_915_morning_allowed_(08:30_MDT) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/El_Paso_915_early_morning_prohibited_(07:30_MDT) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/NY_212_standard_time_before_spring_forward_(07:00_EST) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/NY_212_daylight_saving_time_after_spring_forward_(08:00_EDT) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/NY_212_daylight_saving_time_before_fall_back_(08:00_EDT) (0.00s)
+    --- PASS: TestTCPACurfewTableDriven/NY_212_standard_time_after_fall_back_(07:00_EST) (0.00s)
+=== RUN   TestQueueHandlesUnknownAreaCodeDLQ
+{"time":"2026-11-18T11:57:25.1931875+05:30","level":"INFO","msg":"leads_ingested_idempotent","campaign_id":"camp_unknown_tz_test","accepted":1,"duplicates_skipped":0}
+{"time":"2026-11-18T11:57:25.1931875+05:30","level":"WARN","msg":"dial_routed_to_dlq_unknown_timezone","lead_id":"lead_unknown_tz_1","phone":"9995550199"}
+--- PASS: TestQueueHandlesUnknownAreaCodeDLQ (0.01s)
+=== RUN   TestLivePostgresConcurrentWorkersNeverClaimSameLead
+{"time":"2026-11-18T11:57:25.2577759+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestLivePostgresConcurrentWorkersNeverClaimSameLead (1.25s)
+=== RUN   TestLivePostgresStaleWorkerOutcomeRejection
+{"time":"2026-11-18T11:57:26.6359613+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+=== RUN   TestLivePostgresStaleWorkerOutcomeRejection/ExpiredNotReassigned
+=== RUN   TestLivePostgresStaleWorkerOutcomeRejection/ReassignedToAnotherWorker
+=== RUN   TestLivePostgresStaleWorkerOutcomeRejection/LockWaitRace
+--- PASS: TestLivePostgresStaleWorkerOutcomeRejection (1.94s)
+    --- PASS: TestLivePostgresStaleWorkerOutcomeRejection/ExpiredNotReassigned (0.11s)
+    --- PASS: TestLivePostgresStaleWorkerOutcomeRejection/ReassignedToAnotherWorker (0.05s)
+    --- PASS: TestLivePostgresStaleWorkerOutcomeRejection/LockWaitRace (1.57s)
+=== RUN   TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery
+{"time":"2026-11-18T11:57:28.415199+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestOutboxAccumulatesWhenNATSDownAndDrainsOnRecovery (0.62s)
+=== RUN   TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect
+{"time":"2026-11-18T11:57:29.0412788+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestAtLeastOnceDeliveryCrashBetweenPublishAndMarkIdempotentEffect (0.13s)
+=== RUN   TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect
+{"time":"2026-11-18T11:57:29.1723504+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestDedupWindowExpiryStreamAcceptsDuplicateConsumerIdempotentEffect (1.36s)
+=== RUN   TestPoisonMessageReachesDLQAfterMaxDeliveries
+{"time":"2026-11-18T11:57:30.5531103+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestPoisonMessageReachesDLQAfterMaxDeliveries (0.37s)
+=== RUN   TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID
+{"time":"2026-11-18T11:57:30.8833323+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestConsumerAtLeastOnceDeliveryIgnoresDuplicateEventID (0.08s)
+=== RUN   TestConcurrentRelaysSkipLockedNoDuplicatePublish
+{"time":"2026-11-18T11:57:30.9614545+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestConcurrentRelaysSkipLockedNoDuplicatePublish (0.41s)
+=== RUN   TestOutboxLagMetricKeepsGrowingWhenRelayStopped
+{"time":"2026-11-18T11:57:31.3761458+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestOutboxLagMetricKeepsGrowingWhenRelayStopped (0.32s)
+=== RUN   TestRelayBatchesDoNotBlockEachOther
+{"time":"2026-11-18T11:57:31.7006154+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestRelayBatchesDoNotBlockEachOther (0.15s)
+=== RUN   TestPurgePublishedOutboxEvents
+{"time":"2026-11-18T11:57:31.8435829+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestPurgePublishedOutboxEvents (0.09s)
+=== RUN   TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ
+{"time":"2026-11-18T11:57:31.9325824+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ (0.47s)
+=== RUN   TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry
+{"time":"2026-11-18T11:57:32.404364+05:30","level":"INFO","msg":"postgres_connected_successfully","max_conns":25}
+--- PASS: TestMalformedMessageMissingNatsMsgIdRoutedToDLQWithoutRetry (0.42s)
+PASS
+ok  	github.com/yoohooshantanu/dialpulse/tests	14.633s

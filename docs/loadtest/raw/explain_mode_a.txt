@@ -1,0 +1,37 @@
+﻿BEGIN
+DROP INDEX
+SET
+                                                                                                                                                                                          QUERY PLAN                                                                                                                                                                                          
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Update on leads  (cost=80752.72..81175.54 rows=0 width=0) (actual time=7248.685..7248.693 rows=0 loops=1)
+   Buffers: shared hit=2512 read=14169 dirtied=13 written=1, temp read=6250 written=11529
+   ->  Nested Loop  (cost=80752.72..81175.54 rows=50 width=428) (actual time=7229.131..7235.977 rows=50 loops=1)
+         Buffers: shared hit=1815 read=14162 dirtied=2, temp read=6250 written=11529
+         ->  HashAggregate  (cost=80752.29..80752.79 rows=50 width=56) (actual time=7228.751..7228.871 rows=50 loops=1)
+               Group Key: ("ANY_subquery".id)::text
+               Batches: 1  Memory Usage: 24kB
+               Buffers: shared hit=1611 read=14158 dirtied=2, temp read=6250 written=11529
+               ->  Subquery Scan on "ANY_subquery"  (cost=80751.04..80752.17 rows=50 width=56) (actual time=7228.522..7228.694 rows=50 loops=1)
+                     Buffers: shared hit=1611 read=14158 dirtied=2, temp read=6250 written=11529
+                     ->  Limit  (cost=80751.04..80751.67 rows=50 width=34) (actual time=7228.479..7228.618 rows=50 loops=1)
+                           Buffers: shared hit=1611 read=14158 dirtied=2, temp read=6250 written=11529
+                           ->  LockRows  (cost=80751.04..92993.92 rows=979430 width=34) (actual time=7228.471..7228.600 rows=50 loops=1)
+                                 Buffers: shared hit=1611 read=14158 dirtied=2, temp read=6250 written=11529
+                                 ->  Sort  (cost=80751.04..83199.62 rows=979430 width=34) (actual time=7228.396..7228.424 rows=50 loops=1)
+                                       Sort Key: leads_1.priority DESC, leads_1.created_at
+                                       Sort Method: external merge  Disk: 46064kB
+                                       Buffers: shared hit=1561 read=14158, temp read=6250 written=11529
+                                       ->  Seq Scan on leads leads_1  (cost=0.00..48215.08 rows=979430 width=34) (actual time=2.147..1652.626 rows=979231 loops=1)
+                                             Filter: (((campaign_id)::text = 'camp-load-1'::text) AND (((((status)::text = 'QUEUED'::text) OR ((status)::text = 'DRAFT'::text)) AND ((next_attempt_at IS NULL) OR (next_attempt_at <= clock_timestamp()))) OR (((status)::text = 'DIALING'::text) AND (locked_at IS NOT NULL) AND (locked_at < (clock_timestamp() - '00:00:15'::interval)))))
+                                             Rows Removed by Filter: 20769
+                                             Buffers: shared hit=1555 read=14158
+         ->  Index Scan using leads_pkey on leads  (cost=0.42..8.44 rows=1 width=22) (actual time=0.120..0.120 rows=1 loops=50)
+               Index Cond: ((id)::text = ("ANY_subquery".id)::text)
+               Buffers: shared hit=200 read=4
+ Planning:
+   Buffers: shared hit=272
+ Planning Time: 13.086 ms
+ Execution Time: 7273.801 ms
+(29 rows)
+
+ROLLBACK

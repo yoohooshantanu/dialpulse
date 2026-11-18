@@ -1,0 +1,8 @@
+﻿     indexname      |                                                     indexdef                                                      
+--------------------+-------------------------------------------------------------------------------------------------------------------
+ leads_pkey         | CREATE UNIQUE INDEX leads_pkey ON public.leads USING btree (id)
+ uq_campaign_phone  | CREATE UNIQUE INDEX uq_campaign_phone ON public.leads USING btree (campaign_id, phone_number)
+ idx_leads_dispatch | CREATE INDEX idx_leads_dispatch ON public.leads USING btree (campaign_id, status, priority DESC, next_attempt_at)
+ idx_leads_comp     | CREATE INDEX idx_leads_comp ON public.leads USING btree (campaign_id, priority DESC, created_at)
+(4 rows)
+

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,11 +46,17 @@ type CampaignRepository interface {
 
 // PostgresRepository implements CampaignRepository with connection pooling and atomic database transactions
 type PostgresRepository struct {
-	pool *pgxpool.Pool
+	pool             *pgxpool.Pool
+	outcomeTxRetries atomic.Int64
 }
 
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
+}
+
+// OutcomeTxRetries returns the total number of retries executed by RecordCallOutcomeTx
+func (r *PostgresRepository) OutcomeTxRetries() int64 {
+	return r.outcomeTxRetries.Load()
 }
 
 // Pool exposes the underlying connection pool for health checks and testing
@@ -239,6 +246,7 @@ func (r *PostgresRepository) GetActiveLeads(ctx context.Context, campaignID stri
 		l := &model.Lead{}
 		var status string
 		var lockedBy *string
+		var failureReason *string
 		err := rows.Scan(
 			&l.ID,
 			&l.CampaignID,
@@ -248,7 +256,7 @@ func (r *PostgresRepository) GetActiveLeads(ctx context.Context, campaignID stri
 			&status,
 			&l.Attempts,
 			&l.MaxAttempts,
-			&l.FailureReason,
+			&failureReason,
 			&lockedBy,
 			&l.LockedAt,
 			&l.LastAttemptAt,
@@ -259,6 +267,9 @@ func (r *PostgresRepository) GetActiveLeads(ctx context.Context, campaignID stri
 			return nil, err
 		}
 		l.Status = model.CallStatus(status)
+		if failureReason != nil {
+			l.FailureReason = *failureReason
+		}
 		if lockedBy != nil {
 			l.LockedBy = *lockedBy
 		}
@@ -316,6 +327,7 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 		var status string
 		var lockedBy *string
 		var leaseToken *string
+		var failureReason *string
 		err := rows.Scan(
 			&l.ID,
 			&l.CampaignID,
@@ -325,7 +337,7 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 			&status,
 			&l.Attempts,
 			&l.MaxAttempts,
-			&l.FailureReason,
+			&failureReason,
 			&lockedBy,
 			&l.LockedAt,
 			&l.LastAttemptAt,
@@ -337,6 +349,9 @@ func (r *PostgresRepository) ClaimPendingLeads(ctx context.Context, campaignID s
 			return nil, fmt.Errorf("failed scanning claimed lead: %w", err)
 		}
 		l.Status = model.CallStatus(status)
+		if failureReason != nil {
+			l.FailureReason = *failureReason
+		}
 		if lockedBy != nil {
 			l.LockedBy = *lockedBy
 		}
@@ -614,6 +629,9 @@ func (r *PostgresRepository) RecordCallOutcomeTx(ctx context.Context, leadID str
 	intervalStr := fmt.Sprintf("%f seconds", model.DefaultLeaseTTL.Seconds())
 
 	for i := 0; i < 3; i++ {
+		if i > 0 {
+			r.outcomeTxRetries.Add(1)
+		}
 		err := func() error {
 			tx, err := r.pool.Begin(ctx)
 			if err != nil {

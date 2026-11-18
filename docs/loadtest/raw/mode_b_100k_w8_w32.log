@@ -1,0 +1,127 @@
+﻿
+=== MODE B (SPLIT MODE, W=8, 3 RUNS, 2000 LEADS) ===
+
+--- Run 1 of 3 (Scenario A, W=8, Leads=2000, Mode=split) ---
+Seeded 2000 leads in 0.73s (2741 leads/s)
+
+  [pg_stat_statements Top 5 by Total Execution Time]:
+  Calls    | Mean (ms)    | Total (ms)   | Rows   | Query Prefix
+  ------------------------------------------------------------------------------------------------
+  48       | 76.30        | 3662.59      | 2000   | UPDATE leads SET status = $4, locked_by = $1, locked_at...
+  2000     | 1.68         | 3351.56      | 2000   | INSERT INTO outbox_events ( id, aggregate_type, aggrega...
+  1412     | 2.26         | 3190.31      | 1412   | INSERT INTO call_attempts ( id, campaign_id, lead_id, p...
+  4000     | 0.75         | 3007.90      | 4000   | SELECT status, lease_token, locked_at FROM leads WHERE ...
+  588      | 4.90         | 2883.13      | 588    | INSERT INTO call_attempts ( id, campaign_id, lead_id, p...
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=1999   dead=157    autovacuums=15
+    campaign_outcomes : live=0      dead=0      autovacuums=4
+    leads             : live=2000   dead=2702   autovacuums=17
+    outbox_events     : live=2000   dead=0      autovacuums=17
+    processed_events  : live=0      dead=0      autovacuums=6
+
+--- Run 2 of 3 (Scenario A, W=8, Leads=2000, Mode=split) ---
+Seeded 2000 leads in 1.07s (1871 leads/s)
+
+  [pg_stat_statements Top 5 by Total Execution Time]:
+  Calls    | Mean (ms)    | Total (ms)   | Rows   | Query Prefix
+  ------------------------------------------------------------------------------------------------
+  2000     | 1.26         | 2524.80      | 2000   | INSERT INTO call_attempts ( id, campaign_id, lead_id, p...
+  48       | 30.16        | 1447.61      | 2000   | UPDATE leads SET status = $4, locked_by = $1, locked_at...
+  4000     | 0.35         | 1419.16      | 4000   | SELECT status, lease_token, locked_at FROM leads WHERE ...
+  2000     | 0.60         | 1206.03      | 2000   | UPDATE leads SET status = $1, failure_reason = $2, next...
+  2000     | 0.51         | 1026.96      | 2000   | INSERT INTO outbox_events ( id, aggregate_type, aggrega...
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=2029   dead=135    autovacuums=16
+    campaign_outcomes : live=0      dead=0      autovacuums=4
+    leads             : live=2000   dead=2546   autovacuums=18
+    outbox_events     : live=2023   dead=0      autovacuums=17
+    processed_events  : live=0      dead=0      autovacuums=6
+
+--- Run 3 of 3 (Scenario A, W=8, Leads=2000, Mode=split) ---
+Seeded 2000 leads in 0.35s (5636 leads/s)
+
+  [pg_stat_statements Top 5 by Total Execution Time]:
+  Calls    | Mean (ms)    | Total (ms)   | Rows   | Query Prefix
+  ------------------------------------------------------------------------------------------------
+  2000     | 1.20         | 2397.59      | 2000   | INSERT INTO call_attempts ( id, campaign_id, lead_id, p...
+  48       | 28.87        | 1385.73      | 2000   | UPDATE leads SET status = $4, locked_by = $1, locked_at...
+  4000     | 0.31         | 1230.39      | 4000   | SELECT status, lease_token, locked_at FROM leads WHERE ...
+  2000     | 0.58         | 1159.34      | 2000   | UPDATE leads SET status = $1, failure_reason = $2, next...
+  2000     | 0.44         | 885.58       | 2000   | INSERT INTO outbox_events ( id, aggregate_type, aggrega...
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=1999   dead=174    autovacuums=17
+    campaign_outcomes : live=0      dead=0      autovacuums=4
+    leads             : live=2000   dead=1823   autovacuums=19
+    outbox_events     : live=2000   dead=0      autovacuums=18
+    processed_events  : live=0      dead=0      autovacuums=6
+
+=======================================================================================================================================
+DIALPULSE BENCHMARK SUMMARY (Mode: split) - Max Claim-and-Record Rate (No Dial Time)
+=======================================================================================================================================
+| Scen   | Mode    | W   | Throughput/s    | Tot p50 (ms)    | Tot p99 (ms)    | Claim p50 (ms)  | Record p50 (ms) | PG CPU%    | Cgroup CPU | Locks  | Retries  |
+|--------|---------|-----|-----------------|-----------------|-----------------|-----------------|-----------------|------------|------------|--------|----------|
+| A      | split   | 8   | [38.9 - 46.1]   | [134.6 - 164.9] | [584.5 - 677.0] | [1.7 - 2.9]     | [132.7 - 160.3] | [0.0% - 0.0%] | [62.1% - 86.7%] | [0 - 0] | [0 - 0]  |
+=======================================================================================================================================
+=== MODE B (SPLIT MODE, W=32, 3 RUNS, 2000 LEADS) ===
+
+--- Run 1 of 3 (Scenario A, W=32, Leads=2000, Mode=split) ---
+Seeded 2000 leads in 0.34s (5913 leads/s)
+
+  [pg_stat_statements Top 5 by Total Execution Time]:
+  Calls    | Mean (ms)    | Total (ms)   | Rows   | Query Prefix
+  ------------------------------------------------------------------------------------------------
+  76       | 199.54       | 15164.81     | 2000   | UPDATE leads SET status = $4, locked_by = $1, locked_at...
+  2000     | 3.67         | 7335.31      | 2000   | UPDATE leads SET attempts = $1, last_attempt_at = clock...
+  1579     | 4.26         | 6726.95      | 1579   | INSERT INTO call_attempts ( id, campaign_id, lead_id, p...
+  2000     | 2.83         | 5656.32      | 2000   | UPDATE leads SET status = $1, failure_reason = $2, next...
+  4000     | 1.38         | 5514.79      | 4000   | SELECT status, lease_token, locked_at FROM leads WHERE ...
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=2012   dead=62     autovacuums=18
+    campaign_outcomes : live=0      dead=0      autovacuums=4
+    leads             : live=2000   dead=509    autovacuums=20
+    outbox_events     : live=1996   dead=0      autovacuums=19
+    processed_events  : live=0      dead=0      autovacuums=6
+
+--- Run 2 of 3 (Scenario A, W=32, Leads=2000, Mode=split) ---
+Seeded 2000 leads in 0.83s (2398 leads/s)
+
+  [pg_stat_statements Top 5 by Total Execution Time]:
+  Calls    | Mean (ms)    | Total (ms)   | Rows   | Query Prefix
+  ------------------------------------------------------------------------------------------------
+  72       | 289.27       | 20827.29     | 2000   | UPDATE leads SET status = $4, locked_by = $1, locked_at...
+  2000     | 2.80         | 5597.27      | 2000   | INSERT INTO call_attempts ( id, campaign_id, lead_id, p...
+  4000     | 0.75         | 3007.21      | 4000   | SELECT status, lease_token, locked_at FROM leads WHERE ...
+  2000     | 1.05         | 2097.32      | 2000   | SELECT 1 FROM ONLY "public"."campaigns" x WHERE "id"::p...
+  2000     | 0.80         | 1591.55      | 2000   | INSERT INTO outbox_events ( id, aggregate_type, aggrega...
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=2008   dead=8      autovacuums=19
+    campaign_outcomes : live=0      dead=0      autovacuums=4
+    leads             : live=2000   dead=5      autovacuums=21
+    outbox_events     : live=2008   dead=0      autovacuums=20
+    processed_events  : live=0      dead=0      autovacuums=6
+
+--- Run 3 of 3 (Scenario A, W=32, Leads=2000, Mode=split) ---
+Seeded 2000 leads in 0.47s (4251 leads/s)
+
+  [pg_stat_statements Top 5 by Total Execution Time]:
+  Calls    | Mean (ms)    | Total (ms)   | Rows   | Query Prefix
+  ------------------------------------------------------------------------------------------------
+  72       | 322.88       | 23247.66     | 2000   | UPDATE leads SET status = $4, locked_by = $1, locked_at...
+  4000     | 1.74         | 6951.82      | 4000   | SELECT status, lease_token, locked_at FROM leads WHERE ...
+  2000     | 3.01         | 6012.31      | 2000   | INSERT INTO call_attempts ( id, campaign_id, lead_id, p...
+  2000     | 0.87         | 1744.74      | 2000   | UPDATE leads SET status = $1, failure_reason = $2, next...
+  2000     | 0.70         | 1394.53      | 2000   | INSERT INTO outbox_events ( id, aggregate_type, aggrega...
+  [pg_stat_user_tables Dead Tuples & Autovacuum Count]:
+    call_attempts     : live=1962   dead=280    autovacuums=19
+    campaign_outcomes : live=0      dead=0      autovacuums=4
+    leads             : live=4000   dead=4391   autovacuums=21
+    outbox_events     : live=1960   dead=0      autovacuums=20
+    processed_events  : live=0      dead=0      autovacuums=6
+
+=======================================================================================================================================
+DIALPULSE BENCHMARK SUMMARY (Mode: split) - Max Claim-and-Record Rate (No Dial Time)
+=======================================================================================================================================
+| Scen   | Mode    | W   | Throughput/s    | Tot p50 (ms)    | Tot p99 (ms)    | Claim p50 (ms)  | Record p50 (ms) | PG CPU%    | Cgroup CPU | Locks  | Retries  |
+|--------|---------|-----|-----------------|-----------------|-----------------|-----------------|-----------------|------------|------------|--------|----------|
+| A      | split   | 32  | [54.1 - 67.5]   | [342.4 - 402.5] | [973.8 - 2360.7] | [16.3 - 66.3]   | [323.4 - 355.5] | [0.0% - 0.0%] | [94.5% - 124.2%] | [1 - 10] | [0 - 0]  |
+=======================================================================================================================================

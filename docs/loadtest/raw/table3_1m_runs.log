@@ -1,0 +1,164 @@
+﻿=================================================================
+DATASET EXPERIMENT: 1,000,000 LEADS INDEX COMPARISON AT SCALE
+=================================================================
+✔ Table already contains 979200 queued leads in campaign camp-load-1; skipping re-seeding.
+
+>>> Running 1M Drain: Mode=unified, W=8 (Run 1/3, Draining 100 leads)...
+    Run 1: 3.9 leads/s | Tot p50: 624.1ms (mean: 638.9ms) | Claim p50: 522.1ms (mean: 521.5ms) | Record p50: 100.3ms (mean: 117.4ms) (Total Drained: 100)
+
+>>> Running 1M Drain: Mode=unified, W=8 (Run 2/3, Draining 100 leads)...
+    Run 2: 4.1 leads/s | Tot p50: 560.3ms (mean: 574.2ms) | Claim p50: 517.2ms (mean: 516.3ms) | Record p50: 40.0ms (mean: 57.9ms) (Total Drained: 200)
+
+>>> Running 1M Drain: Mode=unified, W=8 (Run 3/3, Draining 100 leads)...
+    Run 3: 3.7 leads/s | Tot p50: 640.5ms (mean: 659.7ms) | Claim p50: 552.8ms (mean: 552.6ms) | Record p50: 82.6ms (mean: 107.1ms) (Total Drained: 300)
+
+>>> Running 1M Drain: Mode=unified, W=32 (Run 1/3, Draining 100 leads)...
+    Run 1: 0.9 leads/s | Tot p50: 3279.0ms (mean: 3590.0ms) | Claim p50: 2354.2ms (mean: 2361.3ms) | Record p50: 992.6ms (mean: 1228.7ms) (Total Drained: 400)
+
+>>> Running 1M Drain: Mode=unified, W=32 (Run 2/3, Draining 100 leads)...
+    Run 2: 0.9 leads/s | Tot p50: 3502.4ms (mean: 3842.5ms) | Claim p50: 2439.0ms (mean: 2440.5ms) | Record p50: 995.7ms (mean: 1402.0ms) (Total Drained: 500)
+
+>>> Running 1M Drain: Mode=unified, W=32 (Run 3/3, Draining 100 leads)...
+    Run 3: 0.9 leads/s | Tot p50: 3677.4ms (mean: 4287.4ms) | Claim p50: 2682.9ms (mean: 2624.2ms) | Record p50: 994.5ms (mean: 1663.2ms) (Total Drained: 600)
+
+>>> Running 1M Drain: Mode=split, W=8 (Run 1/3, Draining 1500 leads)...
+    Run 1: 87.4 leads/s | Tot p50: 79.8ms (mean: 91.7ms) | Claim p50: 1.8ms (mean: 3.2ms) | Record p50: 77.2ms (mean: 88.5ms) (Total Drained: 2100)
+
+>>> Running 1M Drain: Mode=split, W=8 (Run 2/3, Draining 1500 leads)...
+    Run 2: 62.2 leads/s | Tot p50: 105.8ms (mean: 128.8ms) | Claim p50: 2.4ms (mean: 2.7ms) | Record p50: 103.5ms (mean: 126.2ms) (Total Drained: 3600)
+
+>>> Running 1M Drain: Mode=split, W=8 (Run 3/3, Draining 1500 leads)...
+    Run 3: 88.7 leads/s | Tot p50: 79.3ms (mean: 90.3ms) | Claim p50: 2.2ms (mean: 3.1ms) | Record p50: 75.3ms (mean: 87.2ms) (Total Drained: 5100)
+
+>>> Running 1M Drain: Mode=split, W=32 (Run 1/3, Draining 1500 leads)...
+    Run 1: 94.5 leads/s | Tot p50: 314.9ms (mean: 342.1ms) | Claim p50: 38.5ms (mean: 34.5ms) | Record p50: 278.6ms (mean: 307.5ms) (Total Drained: 6600)
+
+>>> Running 1M Drain: Mode=split, W=32 (Run 2/3, Draining 1500 leads)...
+    Run 2: 110.3 leads/s | Tot p50: 282.3ms (mean: 292.4ms) | Claim p50: 17.7ms (mean: 17.5ms) | Record p50: 264.5ms (mean: 274.9ms) (Total Drained: 8100)
+
+>>> Running 1M Drain: Mode=split, W=32 (Run 3/3, Draining 1500 leads)...
+    Run 3: 110.4 leads/s | Tot p50: 274.4ms (mean: 292.4ms) | Claim p50: 32.3ms (mean: 28.9ms) | Record p50: 243.6ms (mean: 263.4ms) (Total Drained: 9600)
+
+>>> Running 1M Drain: Mode=partial, W=8 (Run 1/3, Draining 1500 leads)...
+    Run 1: 109.6 leads/s | Tot p50: 65.5ms (mean: 73.2ms) | Claim p50: 0.8ms (mean: 1.1ms) | Record p50: 64.3ms (mean: 72.0ms) (Total Drained: 11100)
+
+>>> Running 1M Drain: Mode=partial, W=8 (Run 2/3, Draining 1500 leads)...
+    Run 2: 77.3 leads/s | Tot p50: 87.2ms (mean: 103.6ms) | Claim p50: 1.5ms (mean: 1.6ms) | Record p50: 85.7ms (mean: 102.0ms) (Total Drained: 12600)
+
+>>> Running 1M Drain: Mode=partial, W=8 (Run 3/3, Draining 1500 leads)...
+    Run 3: 69.6 leads/s | Tot p50: 98.4ms (mean: 115.4ms) | Claim p50: 1.7ms (mean: 2.0ms) | Record p50: 95.7ms (mean: 113.3ms) (Total Drained: 14100)
+
+>>> Running 1M Drain: Mode=partial, W=32 (Run 1/3, Draining 1500 leads)...
+    Run 1: 121.2 leads/s | Tot p50: 252.3ms (mean: 266.6ms) | Claim p50: 11.4ms (mean: 10.3ms) | Record p50: 241.9ms (mean: 256.2ms) (Total Drained: 15600)
+
+>>> Running 1M Drain: Mode=partial, W=32 (Run 2/3, Draining 1500 leads)...
+    Run 2: 110.8 leads/s | Tot p50: 274.3ms (mean: 292.6ms) | Claim p50: 14.4ms (mean: 12.9ms) | Record p50: 260.3ms (mean: 279.8ms) (Total Drained: 17100)
+
+>>> Running 1M Drain: Mode=partial, W=32 (Run 3/3, Draining 1500 leads)...
+    Run 3: 110.3 leads/s | Tot p50: 279.9ms (mean: 294.1ms) | Claim p50: 9.7ms (mean: 9.5ms) | Record p50: 270.6ms (mean: 284.6ms) (Total Drained: 18600)
+
+===================================================================================================
+1,000,000 LEADS BENCHMARK SUMMARY (Total Drained: 18600 leads) - Max Claim-and-Record Rate (No Dial Time)
+===================================================================================================
+| Mode       | W   | Throughput/s    | Tot p50 (ms)    | Claim p50 (ms)  | Record p50 (ms) |
+|------------|-----|-----------------|-----------------|-----------------|-----------------|
+| unified    | 8   | [3.7 - 4.1]     | [560.3 - 640.5] | [517.2 - 552.8] | [40.0 - 100.3]  |
+| unified    | 32  | [0.9 - 0.9]     | [3279.0 - 3677.4] | [2354.2 - 2682.9] | [992.6 - 995.7] |
+| split      | 8   | [62.2 - 88.7]   | [79.3 - 105.8]  | [1.8 - 2.4]     | [75.3 - 103.5]  |
+| split      | 32  | [94.5 - 110.4]  | [274.4 - 314.9] | [17.7 - 38.5]   | [243.6 - 278.6] |
+| partial    | 8   | [69.6 - 109.6]  | [65.5 - 98.4]   | [0.8 - 1.7]     | [64.3 - 95.7]   |
+| partial    | 32  | [110.3 - 121.2] | [252.3 - 279.9] | [9.7 - 14.4]    | [241.9 - 270.6] |
+===================================================================================================
+
+=================================================================
+EXPLAIN (ANALYZE, BUFFERS) ON PARTLY DRAINED TABLE (18600 Leads Processed)
+=================================================================
+
+--- [Partly Drained] Unified Query with idx_leads_dispatch ---
+>>> EXPLAIN for: Unified Query (Migration 001)
+  Update on leads  (cost=80717.30..81140.13 rows=0 width=0) (actual time=9673.796..9673.800 rows=0 loops=1)
+    Buffers: shared hit=10756 read=6109 dirtied=42, temp read=6137 written=11302
+    ->  Nested Loop  (cost=80717.30..81140.13 rows=50 width=428) (actual time=9670.719..9672.848 rows=50 loops=1)
+          Buffers: shared hit=10606 read=6109 dirtied=42, temp read=6137 written=11302
+          ->  HashAggregate  (cost=80716.88..80717.38 rows=50 width=56) (actual time=9670.002..9670.043 rows=50 loops=1)
+                Group Key: ("ANY_subquery".id)::text
+                Batches: 1  Memory Usage: 24kB
+                Buffers: shared hit=10358 read=6109 dirtied=42, temp read=6137 written=11302
+                ->  Subquery Scan on "ANY_subquery"  (cost=80715.63..80716.75 rows=50 width=56) (actual time=9669.304..9669.915 rows=50 loops=1)
+                      Buffers: shared hit=10358 read=6109 dirtied=42, temp read=6137 written=11302
+                      ->  Limit  (cost=80715.63..80716.25 rows=50 width=34) (actual time=9669.212..9669.770 rows=50 loops=1)
+                            Buffers: shared hit=10358 read=6109 dirtied=42, temp read=6137 written=11302
+                            ->  LockRows  (cost=80715.63..92681.05 rows=957234 width=34) (actual time=9669.210..9669.752 rows=50 loops=1)
+                                  Buffers: shared hit=10358 read=6109 dirtied=42, temp read=6137 written=11302
+                                  ->  Sort  (cost=80715.63..83108.71 rows=957234 width=34) (actual time=9669.107..9669.150 rows=50 loops=1)
+                                        Sort Key: leads_1.priority DESC, leads_1.created_at
+                                        Sort Method: external merge  Disk: 45160kB
+                                        Buffers: shared hit=10308 read=6109 dirtied=42, temp read=6137 written=11302
+                                        ->  Seq Scan on leads leads_1  (cost=0.00..48917.00 rows=957234 width=34) (actual time=0.025..2013.435 rows=960030 loops=1)
+                                              Filter: (((campaign_id)::text = 'camp-load-1'::text) AND (((((status)::text = 'QUEUED'::text) OR ((status)::text = 'DRAFT'::text)) AND ((next_attempt_at IS NULL) OR (next_attempt_at <= clock_timestamp()))) OR (((status)::text = 'DIALING'::text) AND (locked_at IS NOT NULL) AND (locked_at < (clock_timestamp() - '00:02:00'::interval)))))
+                                              Rows Removed by Filter: 39970
+                                              Buffers: shared hit=10308 read=6109 dirtied=42
+          ->  Index Scan using leads_pkey on leads  (cost=0.42..8.44 rows=1 width=22) (actual time=0.045..0.045 rows=1 loops=50)
+                Index Cond: ((id)::text = ("ANY_subquery".id)::text)
+                Buffers: shared hit=227
+  Planning:
+    Buffers: shared hit=45
+  Planning Time: 1.651 ms
+  Execution Time: 9699.870 ms
+
+--- [Partly Drained] Split Fast Path with idx_leads_comp (Composite Index) ---
+>>> EXPLAIN for: Split Fast Path (Composite Index)
+  Update on leads  (cost=5.51..428.34 rows=0 width=0) (actual time=91.518..91.532 rows=0 loops=1)
+    Buffers: shared hit=6224 read=42 dirtied=17
+    ->  Nested Loop  (cost=5.51..428.34 rows=50 width=428) (actual time=70.224..74.578 rows=50 loops=1)
+          Buffers: shared hit=5314 read=39 dirtied=9
+          ->  HashAggregate  (cost=5.09..5.59 rows=50 width=56) (actual time=69.991..70.226 rows=50 loops=1)
+                Group Key: ("ANY_subquery".id)::text
+                Batches: 1  Memory Usage: 24kB
+                Buffers: shared hit=5116 read=37 dirtied=9
+                ->  Subquery Scan on "ANY_subquery"  (cost=0.42..4.96 rows=50 width=56) (actual time=58.128..69.793 rows=50 loops=1)
+                      Buffers: shared hit=5116 read=37 dirtied=9
+                      ->  Limit  (cost=0.42..4.46 rows=50 width=34) (actual time=58.100..69.562 rows=50 loops=1)
+                            Buffers: shared hit=5116 read=37 dirtied=9
+                            ->  LockRows  (cost=0.42..77202.76 rows=955633 width=34) (actual time=58.095..69.533 rows=50 loops=1)
+                                  Buffers: shared hit=5116 read=37 dirtied=9
+                                  ->  Index Scan using idx_leads_comp on leads leads_1  (cost=0.42..67646.43 rows=955633 width=34) (actual time=58.018..68.850 rows=50 loops=1)
+                                        Index Cond: ((campaign_id)::text = 'camp-load-1'::text)
+                                        Filter: (((status)::text = 'QUEUED'::text) AND ((next_attempt_at IS NULL) OR (next_attempt_at <= clock_timestamp())))
+                                        Rows Removed by Filter: 24620
+                                        Buffers: shared hit=5020 read=37 dirtied=1
+          ->  Index Scan using leads_pkey on leads  (cost=0.42..8.44 rows=1 width=22) (actual time=0.023..0.023 rows=1 loops=50)
+                Index Cond: ((id)::text = ("ANY_subquery".id)::text)
+                Buffers: shared hit=198 read=2
+  Planning:
+    Buffers: shared hit=32 read=1
+  Planning Time: 1.736 ms
+  Execution Time: 91.945 ms
+
+--- [Partly Drained] Split Fast Path with idx_leads_partial_queued (Partial Index) ---
+>>> EXPLAIN for: Split Fast Path (Partial Index WHERE status='QUEUED')
+  Update on leads  (cost=5.42..428.24 rows=0 width=0) (actual time=5.498..5.503 rows=0 loops=1)
+    Buffers: shared hit=1078 read=3 dirtied=2
+    ->  Nested Loop  (cost=5.42..428.24 rows=50 width=428) (actual time=0.492..1.616 rows=50 loops=1)
+          Buffers: shared hit=259 read=3
+          ->  HashAggregate  (cost=4.99..5.49 rows=50 width=56) (actual time=0.412..0.469 rows=50 loops=1)
+                Group Key: ("ANY_subquery".id)::text
+                Batches: 1  Memory Usage: 24kB
+                Buffers: shared hit=59 read=3
+                ->  Subquery Scan on "ANY_subquery"  (cost=0.42..4.87 rows=50 width=56) (actual time=0.158..0.364 rows=50 loops=1)
+                      Buffers: shared hit=59 read=3
+                      ->  Limit  (cost=0.42..4.37 rows=50 width=34) (actual time=0.150..0.324 rows=50 loops=1)
+                            Buffers: shared hit=59 read=3
+                            ->  LockRows  (cost=0.42..75577.49 rows=958100 width=34) (actual time=0.149..0.311 rows=50 loops=1)
+                                  Buffers: shared hit=59 read=3
+                                  ->  Index Scan using idx_leads_partial_queued on leads leads_1  (cost=0.42..65996.49 rows=958100 width=34) (actual time=0.139..0.231 rows=50 loops=1)
+                                        Index Cond: ((campaign_id)::text = 'camp-load-1'::text)
+                                        Filter: (((status)::text = 'QUEUED'::text) AND ((next_attempt_at IS NULL) OR (next_attempt_at <= clock_timestamp())))
+                                        Buffers: shared hit=9 read=3
+          ->  Index Scan using leads_pkey on leads  (cost=0.42..8.44 rows=1 width=22) (actual time=0.013..0.013 rows=1 loops=50)
+                Index Cond: ((id)::text = ("ANY_subquery".id)::text)
+                Buffers: shared hit=200
+  Planning:
+    Buffers: shared hit=40 read=1
+  Planning Time: 1.708 ms
+  Execution Time: 5.740 ms
