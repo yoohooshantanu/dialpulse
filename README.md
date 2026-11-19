@@ -1,13 +1,11 @@
 # PredictiveDialer
 
-[![CI](https://github.com/yoohooshantanu/dialpulse/actions/workflows/ci.yml/badge.svg)](https://github.com/yoohooshantanu/dialpulse/actions)
+[![CI](https://github.com/yoohooshantanu/predictive-dialer/actions/workflows/ci.yml/badge.svg)](https://github.com/yoohooshantanu/predictive-dialer/actions)
 ![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791)
 ![NATS JetStream](https://img.shields.io/badge/NATS-JetStream-27AAE1)
 
 A predictive dialer for outbound calling campaigns, written in Go. It decides how many numbers to call, which leads pass basic curfew and Do-Not-Call checks right now, which worker owns which lead, and what happens when something crashes halfway through. Postgres is the source of truth, NATS JetStream carries the events, and the phone network is a mock.
-
-*(The GitHub repo is called dialpulse. The Go module and binary are named predictive-dialer from an architectural rename.)*
 
 I wanted to build the boring-sounding, hard-in-practice part of a call center: the part where a few hundred things happen at once and none of them are allowed to happen twice.
 
@@ -252,8 +250,8 @@ One known gap: if the consumer crashes after the DLQ publish and before the ack,
 You need Docker. Go 1.23+ if you want to run tests or build locally.
 
 ```bash
-git clone https://github.com/yoohooshantanu/dialpulse
-cd dialpulse
+git clone https://github.com/yoohooshantanu/predictive-dialer
+cd predictive-dialer
 docker compose up -d
 ```
 
