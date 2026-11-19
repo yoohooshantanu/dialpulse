@@ -5,7 +5,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791)
 ![NATS JetStream](https://img.shields.io/badge/NATS-JetStream-27AAE1)
 
-A predictive dialer for outbound calling campaigns, written in Go. It decides how many numbers to call, who is legally allowed to be called right now, which worker owns which lead, and what happens when something crashes halfway through. Postgres is the source of truth, NATS JetStream carries the events, and the phone network is a mock.
+A predictive dialer for outbound calling campaigns, written in Go. It decides how many numbers to call, which leads pass basic curfew and Do-Not-Call checks right now, which worker owns which lead, and what happens when something crashes halfway through. Postgres is the source of truth, NATS JetStream carries the events, and the phone network is a mock.
 
 I wanted to build the boring-sounding, hard-in-practice part of a call center: the part where a few hundred things happen at once and none of them are allowed to happen twice.
 
@@ -124,6 +124,9 @@ On top of that:
 To be precise about naming: this is a Little's-law-style heuristic, not a full Erlang-C model.
 
 ### The compliance gate
+
+> [!NOTE]
+> **Scope & regulatory boundaries**: This gate enforces an internal Do-Not-Call registry and federal 8am–9pm curfew windows. It demonstrates fail-closed filtering and time zone routing, not full telemarketing regulatory compliance (state-specific mini-TCPA curfews like Florida/Oklahoma 8pm cutoffs, prior-express-written-consent tracking, and mobile vs. landline carrier scrubs are outside the scope of this project).
 
 **Do-Not-Call (`internal/dnc`)**: A Bloom filter in a bitset, sized for 1,000,000 numbers at a 0.1% false-positive rate (about 1.8 MB and 10 hash functions at the server's defaults). Hashing is FNV-1a with Kirsch-Mitzenmacher double hashing, so one pair of hashes simulates all ten. A false positive means a clean number gets skipped, which is the safe direction. There are no false negatives.
 
@@ -435,7 +438,7 @@ go run ./cmd/loadgen -scenario=AB -workers=8 -leads=2000 -runs=3
 Stated plainly, so you do not have to find them yourself:
 1. **No real telephony**: The carrier and agents are mocks.
 2. **The shipped claim query does not scale past a few hundred thousand leads** (see above). The fix is prototyped, not merged into the engine.
-3. **The time-zone table is 37 area codes**: Unknown ones are dead-lettered, which is safe but not useful at scale. State-specific calling windows are not implemented, and number portability is ignored.
+3. **The time-zone table is 37 area codes**: Unknown ones are dead-lettered, which is safe but not useful at scale. State-specific calling windows (e.g., FL/OK 8pm cutoffs) are not implemented, and number portability is ignored.
 4. **The server does not run the outbox consumer**: It is exercised by tests and the load generator.
 5. **`processed_events` and `outbox_events` pruning is a function, not a job**.
 6. **Lease heartbeats are not implemented**: Calls longer than the 2-minute lease would need them.
