@@ -1,4 +1,4 @@
-# DialPulse
+# PredictiveDialer
 
 [![CI](https://github.com/yoohooshantanu/dialpulse/actions/workflows/ci.yml/badge.svg)](https://github.com/yoohooshantanu/dialpulse/actions)
 ![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8)
@@ -6,6 +6,8 @@
 ![NATS JetStream](https://img.shields.io/badge/NATS-JetStream-27AAE1)
 
 A predictive dialer for outbound calling campaigns, written in Go. It decides how many numbers to call, which leads pass basic curfew and Do-Not-Call checks right now, which worker owns which lead, and what happens when something crashes halfway through. Postgres is the source of truth, NATS JetStream carries the events, and the phone network is a mock.
+
+*(The GitHub repo is called dialpulse. The Go module and binary are named predictive-dialer from an architectural rename.)*
 
 I wanted to build the boring-sounding, hard-in-practice part of a call center: the part where a few hundred things happen at once and none of them are allowed to happen twice.
 
@@ -206,7 +208,7 @@ Either the outcome and its event both exist, or neither does. That is the whole 
 
 ### The outbox, the relay, and the consumer
 
-The classic dual-write problem: commit to the database, then publish to the broker. If the process dies between the two, the event is lost. Publish first and commit second, and you may announce something that never happened. There is no atomic transaction across Postgres and NATS, so DialPulse does not try to fake one.
+The classic dual-write problem: commit to the database, then publish to the broker. If the process dies between the two, the event is lost. Publish first and commit second, and you may announce something that never happened. There is no atomic transaction across Postgres and NATS, so PredictiveDialer does not try to fake one.
 
 ```mermaid
 sequenceDiagram
@@ -235,11 +237,11 @@ sequenceDiagram
 
 **Poison messages**: The durable pull consumer is configured with `MaxDeliver: -1`, so the broker never gives up on its own. The consumer counts deliveries itself (`NumDelivered`) and enforces the limit (3 by default) in application code. Why? If the broker enforced it and the DLQ publish happened to fail on the final attempt, the message would just vanish. With the limit in code, a failed DLQ publish means a `NakWithDelay` and another try, and `TestDLQPublishFailsOnThirdDeliveryRedeliveredAndLandsInDLQ` proves the message still lands.
 
-Poison messages go to `dialpulse.dlq.<aggregate_type>` with headers `x-dead-letter-reason: max_deliveries_exceeded`, `x-original-event-id`, `x-delivery-count` and `x-dlq-error`. A message with no `Nats-Msg-Id` is malformed: it goes to the DLQ at once with `x-dead-letter-reason: malformed_missing_id` and is acked, since retrying garbage helps no one.
+Poison messages go to `predictive_dialer.dlq.<aggregate_type>` with headers `x-dead-letter-reason: max_deliveries_exceeded`, `x-original-event-id`, `x-delivery-count` and `x-dlq-error`. A message with no `Nats-Msg-Id` is malformed: it goes to the DLQ at once with `x-dead-letter-reason: malformed_missing_id` and is acked, since retrying garbage helps no one.
 
 One known gap: if the consumer crashes after the DLQ publish and before the ack, you get a duplicate DLQ entry. Treat the DLQ as at-least-once too.
 
-**Lag**: `dialpulse_outbox_lag_seconds` is computed at scrape time as the age of the oldest unpublished row. It does not depend on the relay's own loop, so if the relay stalls the number keeps climbing instead of freezing at zero.
+**Lag**: `predictive_dialer_outbox_lag_seconds` is computed at scrape time as the age of the oldest unpublished row. It does not depend on the relay's own loop, so if the relay stalls the number keeps climbing instead of freezing at zero.
 
 **Housekeeping**: `PurgePublishedOutboxEvents` trims old published rows. The `processed_events` ledger grows forever unless you prune it, and the retention window must be longer than any redelivery horizon. That job is not scheduled for you.
 
@@ -284,7 +286,7 @@ curl -s localhost:8086/v1/campaigns/demo/stats
 curl -s localhost:8086/v1/campaigns/demo/dlq
 ```
 
-Heads up: the curfew check uses the recipient's local time. If you run this at an hour when the US numbers are outside 8am to 9pm, nothing will dial. That is the compliance gate doing its job, and `dialpulse_timezone_blocks` on `/metrics` will go up. Come back in the morning, Pacific time.
+Heads up: the curfew check uses the recipient's local time. If you run this at an hour when the US numbers are outside 8am to 9pm, nothing will dial. That is the compliance gate doing its job, and `predictive_dialer_timezone_blocks` on `/metrics` will go up. Come back in the morning, Pacific time.
 
 Block a number:
 
@@ -343,7 +345,7 @@ Lead statuses: `QUEUED`, `DIALING`, `RINGING`, `ANSWERED`, `CONNECTED`, `BUSY`, 
 
 ## Observability
 
-`/metrics` exposes: `dialpulse_total_dials`, `dialpulse_total_connects`, `dialpulse_total_abandons`, `dialpulse_abandon_rate_pct`, `dialpulse_dnc_hits`, `dialpulse_timezone_blocks`, `dialpulse_total_leads_ingested`, `dialpulse_active_dialers`, `dialpulse_storage_errors`, and `dialpulse_outbox_lag_seconds`. The compose file ships a Prometheus that scrapes it every 5 seconds. Logging is structured, and pprof is on `/debug/pprof/` when you need to see where the CPU went.
+`/metrics` exposes: `predictive_dialer_total_dials`, `predictive_dialer_total_connects`, `predictive_dialer_total_abandons`, `predictive_dialer_abandon_rate_pct`, `predictive_dialer_dnc_hits`, `predictive_dialer_timezone_blocks`, `predictive_dialer_total_leads_ingested`, `predictive_dialer_active_dialers`, `predictive_dialer_storage_errors`, and `predictive_dialer_outbox_lag_seconds`. The compose file ships a Prometheus that scrapes it every 5 seconds. Logging is structured, and pprof is on `/debug/pprof/` when you need to see where the CPU went.
 
 ---
 
